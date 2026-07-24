@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Wand2 } from "lucide-react";
 import type { DwellingRoom, DwellingFurniture, DwellingFurnitureItem } from "@/lib/dwelling-storage";
 import { resolveFurnitureMarker } from "@/lib/dwelling-engine";
+import { DWELLING_IMAGE_CANCELED_ERROR } from "@/lib/dwelling-image";
 
 export type DwellingRoomImageStatus = "ambient" | "generating" | "ready" | "failed";
 
@@ -22,10 +23,11 @@ type RoomViewProps = {
     imageConfigured: boolean;
     onToggleImage: () => void;
     onRetryImage: () => void;
+    onCancelImage: () => void;
 };
 
-/** 与 dwelling-engine 的 clamp 范围保持一致：避开顶部页签区和底部引言区 */
-const MK_X_MIN = 0.08, MK_X_MAX = 0.92, MK_Y_MIN = 0.16, MK_Y_MAX = 0.82;
+/** 与 dwelling-engine 的 clamp 范围保持一致：避开顶部玻璃栏区和底部引言区 */
+const MK_X_MIN = 0.08, MK_X_MAX = 0.92, MK_Y_MIN = 0.24, MK_Y_MAX = 0.82;
 const LONG_PRESS_MS = 450;
 const LONG_PRESS_TOLERANCE = 10;
 
@@ -44,7 +46,7 @@ export function RoomView({
     room, itemHtmlCache, loadingItemKeys, lastItemError,
     onExploreItem, onOpenItem, onMoveMarker,
     imageUrl, imageStatus, imageError, imageEnabled, imageConfigured,
-    onToggleImage, onRetryImage,
+    onToggleImage, onRetryImage, onCancelImage,
 }: RoomViewProps) {
     const [viewMode, setViewMode] = useState<"stage" | "list">("stage");
     const [sheetFurnitureId, setSheetFurnitureId] = useState<string | null>(null);
@@ -212,12 +214,15 @@ export function RoomView({
         ? (room.furniture || []).find(f => f.id === sheetFurnitureId) ?? null
         : null;
 
+    /** 待确认的操作：重新生成图 / 切换生图开关 */
+    const [confirmAction, setConfirmAction] = useState<"regen" | "toggle" | null>(null);
+
     function handleToggleImage() {
         if (!imageConfigured) {
             setTip("请先在设置中配置并开启图像生成");
             return;
         }
-        onToggleImage();
+        setConfirmAction("toggle");
     }
 
     // ── 清单视图 ──
@@ -278,11 +283,18 @@ export function RoomView({
             <div className="dw2-scrim-bottom" />
             <div className="dw2-wall">DWELLING</div>
 
+            {/* 生成中悬浮条（每个房间独立） */}
+            {imageStatus === "generating" && (
+                <div className="dw2-genbar">
+                    <span className="dw2-genbar-spin" />
+                    <span className="dw2-genbar-text">房间生成中…</span>
+                    <button className="dw2-genbar-stop" onClick={onCancelImage}>停止</button>
+                </div>
+            )}
             {/* 状态徽标 */}
-            {imageStatus === "generating" && <div className="dw2-badge" data-kind="gen">GENERATING</div>}
             {imageStatus === "failed" && (
                 <button className="dw2-badge" data-kind="fail" onClick={onRetryImage} title={imageError ?? undefined}>
-                    生成失败 · 重试
+                    {imageError === DWELLING_IMAGE_CANCELED_ERROR ? "已停止 · 点击生成" : "生成失败 · 重试"}
                 </button>
             )}
             {imageStatus === "ambient" && !imageUrl && <div className="dw2-badge" data-kind="amb">AMBIENT</div>}
@@ -320,7 +332,9 @@ export function RoomView({
                 <div className="dw2-meta">
                     <span className="dw2-time">{formatStageTime()}</span>
                     <span className="dw2-ops">
-                        <button className="dw2-op" onClick={() => setViewMode("list")} title="物品清单">☰</button>
+                        {imageEnabled && imageConfigured && imageStatus === "ready" && (
+                            <button className="dw2-op" onClick={() => setConfirmAction("regen")} title="重新生成房间图">↻</button>
+                        )}
                         <button className="dw2-op" data-on={imageEnabled && imageConfigured ? "true" : undefined}
                             onClick={handleToggleImage} title={imageEnabled ? "关闭生图" : "开启生图"}>✦</button>
                     </span>
@@ -328,6 +342,34 @@ export function RoomView({
             </div>
 
             {tip && <div className="dw2-tip">{tip}</div>}
+
+            {/* 重新生成 / 开关生图确认弹窗 */}
+            {confirmAction && (
+                <div className="dw-confirm-overlay">
+                    <div className="dw-confirm-shade" onClick={() => setConfirmAction(null)} />
+                    <div className="dw-confirm-card">
+                        <div className="dw-confirm-title">
+                            {confirmAction === "regen" ? "重新生成房间图" : imageEnabled ? "关闭生图" : "开启生图"}
+                        </div>
+                        <div className="dw-confirm-msg">
+                            {confirmAction === "regen"
+                                ? `将为「${room.name}」重新生成一张房间图\n并替换当前图片`
+                                : imageEnabled
+                                    ? "关闭后房间将显示氛围底图\n已生成的图片会保留"
+                                    : "开启后会自动为没有图的房间生成图片"}
+                        </div>
+                        <div className="dw-confirm-actions">
+                            <button className="dw-confirm-btn dw-confirm-btn-cancel" onClick={() => setConfirmAction(null)}>取消</button>
+                            <button className="dw-confirm-btn" onClick={() => {
+                                const action = confirmAction;
+                                setConfirmAction(null);
+                                if (action === "regen") onRetryImage();
+                                else onToggleImage();
+                            }}>确认</button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* 家具底部弹窗 */}
             {sheetFurniture && (
@@ -369,7 +411,6 @@ export function RoomView({
                                                 </div>
                                             ) : (
                                                 <>
-                                                    {lastItemError && <div className="dw2-serr">{lastItemError}</div>}
                                                     <button className="dw2-cta" onClick={() => onExploreItem(sheetFurniture, item)}>
                                                         开 始 探 索
                                                         <span className="dw2-cta-en">EXPLORE</span>
@@ -408,7 +449,6 @@ function ListFurnitureCard({ room, furniture, itemHtmlCache, loadingItemKeys, la
     return (
         <div className="dw-fur-card" data-expanded={isExpanded ? "true" : undefined}>
             <button className="dw-fur-header" onClick={() => setCollapsed(c => !c)}>
-                <span className="dw-fur-emoji">{furniture.icon}</span>
                 <span className="dw-fur-label">{furniture.label}</span>
                 <span className="dw-fur-count">{furniture.items.length}</span>
                 <span className="dw-fur-chevron">{isExpanded ? "▾" : "▸"}</span>

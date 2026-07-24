@@ -16,7 +16,8 @@ import {
     collectRoomImageRefs,
 } from "@/lib/dwelling-storage";
 import { generateDwellingLayout, generateItemHtml, type DwellingRefreshMode } from "@/lib/dwelling-engine";
-import { getDwellingImageAvailability, generateDwellingRoomImage } from "@/lib/dwelling-image";
+import { pinyin } from "pinyin-pro";
+import { getDwellingImageAvailability, generateDwellingRoomImage, cancelDwellingRoomImage } from "@/lib/dwelling-image";
 import { deleteMediaRef, loadMediaObjectUrl } from "@/lib/media-cache-storage";
 import { RoomView, type DwellingRoomImageStatus } from "./room-view";
 import { StoryHtmlRenderer } from "@/components/ui/story-html-renderer";
@@ -65,6 +66,17 @@ function itemKey(roomId: string, itemId: string) { return `${roomId}_${itemId}`;
 
 /** mediaRef → object URL（会话级缓存，图不多，不主动 revoke） */
 const roomImageUrls = new Map<string, string>();
+
+/** 角色名 → 大写拼音（chip 下行幽灵字） */
+const charEnCache = new Map<string, string>();
+function charChipEn(name: string): string {
+    let en = charEnCache.get(name);
+    if (en === undefined) {
+        try { en = pinyin(name, { toneType: "none" }).toUpperCase(); } catch { en = ""; }
+        charEnCache.set(name, en);
+    }
+    return en;
+}
 
 export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
     const [characters, setCharacters] = useState<Character[]>([]);
@@ -326,7 +338,7 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
     const activeRoom = cs?.layout?.rooms[activeRoomIdx] ?? null;
 
     return (
-        <div className="dwelling-app">
+        <div className="dwelling-app" data-haspicker={characters.length > 1 ? "true" : undefined}>
             <div className="dwelling-header">
                 <button className="dw-back" onClick={onClose}><ChevronLeft size={18} /></button>
                 <h1>栖 所<span className="dw-title-en">DWELLING</span></h1>
@@ -340,7 +352,8 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                             <button key={c.id} className="dwelling-char-chip"
                                 data-active={activeCharId === c.id ? "true" : undefined}
                                 onClick={() => { setActiveCharId(c.id); setActiveRoomIdx(0); setItemDetail(null); }}>
-                                {c.name}{s.isGenerating && " ⏳"}{!s.isGenerating && s.layout && " ✓"}
+                                <span className="dw-chip-zh">{c.name}{s.isGenerating ? " …" : s.layout ? " ✓" : ""}</span>
+                                {charChipEn(c.name) && <span className="dw-chip-en">{charChipEn(c.name)}</span>}
                             </button>
                         );
                     })}
@@ -359,7 +372,18 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
             {cs?.isGenerating && cs.layout && (
                 <div className="dwelling-loading-bar"><span className="dwelling-spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /><span>刷新中…</span></div>
             )}
-            {cs?.error && <div className="dwelling-error">{cs.error}</div>}
+            {cs && (cs.error || cs.lastItemError) && (
+                <div className="dw-confirm-overlay">
+                    <div className="dw-confirm-shade" onClick={() => { cs.error = null; cs.lastItemError = null; rerender(); }} />
+                    <div className="dw-confirm-card">
+                        <div className="dw-confirm-title">{cs.error ? "生成失败" : "探索失败"}</div>
+                        <div className="dw-confirm-msg dw-error-msg">{cs.error || cs.lastItemError}</div>
+                        <div className="dw-confirm-actions">
+                            <button className="dw-confirm-btn" onClick={() => { cs.error = null; cs.lastItemError = null; rerender(); }}>知道了</button>
+                        </div>
+                    </div>
+                </div>
+            )}
             {activeCharId && cs?.loaded && !cs.layout && !cs.isGenerating && (
                 <div className="dwelling-empty">
                     <span>还未生成 ta 的房间</span>
@@ -429,6 +453,7 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                             if (next) cs.imageErrors = {};
                         }}
                         onRetryImage={() => { if (activeCharId) void handleGenerateRoomImage(activeCharId, activeRoom.id); }}
+                        onCancelImage={() => { if (activeCharId) cancelDwellingRoomImage(activeCharId, activeRoom.id); }}
                     />
                 );
             })()}
@@ -437,7 +462,6 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                     <div className="dwelling-items-shade" onClick={() => setItemDetail(null)} />
                     <div className="dwelling-detail-card" role="dialog" aria-modal="true" aria-label={itemDetail.itemName}>
                         <div className="dwelling-items-header">
-                            <span className="dwelling-items-icon">{itemDetail.furnitureIcon}</span>
                             <div className="dwelling-detail-heading">
                                 <div className="dwelling-detail-name">{itemDetail.itemName}</div>
                                 <div className="dwelling-detail-location">{itemDetail.roomName} · {itemDetail.furnitureLabel}</div>
