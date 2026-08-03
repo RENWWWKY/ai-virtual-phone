@@ -1,7 +1,8 @@
 "use client";
 
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Languages, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
+import { LanguageIcon } from "@heroicons/react/24/solid";
 import { marked } from "marked";
 import { translateReasoningText } from "@/lib/reasoning-translate";
 
@@ -42,6 +43,9 @@ function StoryFoldBlock({ label, content, scopeClass, children }: {
     const [translating, setTranslating] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [viewMode, setViewMode] = useState<"both" | "zh" | "orig">("both");
+    // 折叠内容懒挂载：收起状态下 iframe 宽度为 0，高度桥会测出垃圾值并触发
+    // vh 反馈环高度锁（表现为展开后一大段空白）。展开后才渲染内容即可避免。
+    const [hasOpened, setHasOpened] = useState(false);
     const handleTranslate = async (e: { preventDefault(): void; stopPropagation(): void }) => {
         e.preventDefault();
         e.stopPropagation();
@@ -64,7 +68,11 @@ function StoryFoldBlock({ label, content, scopeClass, children }: {
         setViewMode(mode);
     };
     return (
-        <details className="story-fold-block" data-fold-tag={label}>
+        <details
+            className="story-fold-block"
+            data-fold-tag={label}
+            onToggle={(e) => { if (e.currentTarget.open) setHasOpened(true); }}
+        >
             <summary>
                 {label}
                 {canTranslate && !translation && (
@@ -77,7 +85,7 @@ function StoryFoldBlock({ label, content, scopeClass, children }: {
                     >
                         {translating
                             ? <Loader2 size={13} className="story-fold-icon-spin" aria-hidden="true" />
-                            : <Languages size={13} aria-hidden="true" />}
+                            : <LanguageIcon width={13} height={13} aria-hidden="true" />}
                     </button>
                 )}
                 {canTranslate && translation && (
@@ -101,7 +109,7 @@ function StoryFoldBlock({ label, content, scopeClass, children }: {
                         <MarkdownSegment content={translation} scopeClass={scopeClass} />
                     </div>
                 )}
-                {(viewMode !== "zh" || !translation) && children}
+                {(viewMode !== "zh" || !translation) && hasOpened ? children : null}
             </div>
         </details>
     );
@@ -190,7 +198,12 @@ function MarkdownSegment({ content, scopeClass }: { content: string; scopeClass:
 
         // 2. Strip only <script> tags (security), keep everything else as-is
         //    No DOMPurify — regex-processed HTML is user-configured and trusted
-        const clean = rawHtml.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+        let clean = rawHtml.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+
+        // 2.5 单换行(<br>)后的行也做首行缩进：CSS text-indent 只作用于段落首行，
+        //     标准的 each-line 关键字浏览器均未实现，这里在每个 <br> 后插入
+        //     2em 占位符模拟；折叠块/系统消息内由 CSS 把占位符宽度归零
+        clean = clean.replace(/<br\s*\/?>/gi, '<br><span class="story-br-indent"></span>');
 
         // 3. Scope <style> blocks to prevent CSS leaking
         const scoped = scopeStyles(clean, scopeClass);
@@ -235,9 +248,10 @@ interface HtmlPageProps {
     html: string;
     onOptionSelect?: (text: string) => void;
     htmlPageMode: "auto" | "contained";
+    serifIframeFallback?: boolean;
 }
 
-function HtmlPageSegment({ html, onOptionSelect, htmlPageMode }: HtmlPageProps) {
+function HtmlPageSegment({ html, onOptionSelect, htmlPageMode, serifIframeFallback }: HtmlPageProps) {
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const [height, setHeight] = useState(0);
     const contained = htmlPageMode === "contained";
@@ -255,7 +269,11 @@ function HtmlPageSegment({ html, onOptionSelect, htmlPageMode }: HtmlPageProps) 
         // iframe 内部永远不滚（iOS 对 iframe 内部文档滚动的手势支持不可靠，生成页里的
         // fixed/100vh 元素会让整页划不动）；contained 模式改由外层同文档 div 滚动。
         // height:auto 把生成页常见的 height:100vh 压回内容高，保证测量与手势链正确。
-        const bridge = `<style>html,body{overflow:hidden!important;height:auto!important;min-height:0!important}</style><script>(function(){function measure(){var d=document.documentElement;var b=document.body;if(!b)return 0;var br=b.getBoundingClientRect();var h=Math.max(br.height,b.scrollHeight||0,d?d.scrollHeight||0:0);for(var i=0;i<b.children.length;i++){var c=b.children[i];var r=c.getBoundingClientRect();if(r.width||r.height)h=Math.max(h,r.bottom-br.top,c.scrollHeight||0)}return Math.ceil(h)}function send(){window.parent.postMessage({type:"_rhr",h:measure()},"*")}function schedule(){requestAnimationFrame(function(){send();requestAnimationFrame(send)})}window.addEventListener("load",schedule);window.addEventListener("resize",schedule);document.addEventListener("click",function(e){var t=e.target&&e.target.closest&&e.target.closest("[data-action]");if(t){var a=t.getAttribute("data-action");if(a){e.preventDefault();e.stopPropagation();window.parent.postMessage({type:"_rhr_opt",text:a},"*")}}schedule()},true);document.addEventListener("toggle",schedule,true);document.addEventListener("transitionend",schedule,true);document.addEventListener("animationend",schedule,true);if(window.MutationObserver)new MutationObserver(schedule).observe(document.documentElement,{attributes:true,childList:true,subtree:true,characterData:true});if(window.ResizeObserver){var ro=new ResizeObserver(schedule);ro.observe(document.documentElement);if(document.body)ro.observe(document.body)}setTimeout(send,80);setTimeout(send,500);setTimeout(send,1600)})();<\/script>`;
+        const bridge = `<style>html,body{overflow:hidden!important;height:auto!important;min-height:0!important}</style><script>(function(){function measure(){var b=document.body;if(!b)return 0;if(window.innerWidth<50)return 0;var br=b.getBoundingClientRect();var h=Math.max(br.height,b.scrollHeight||0);for(var i=0;i<b.children.length;i++){var c=b.children[i];var r=c.getBoundingClientRect();if(r.width||r.height)h=Math.max(h,r.bottom-br.top,c.scrollHeight||0)}return Math.ceil(h)}function send(){var h=measure();if(!h)return;window.parent.postMessage({type:"_rhr",h:h},"*")}function schedule(){requestAnimationFrame(function(){send();requestAnimationFrame(send)})}window.addEventListener("load",schedule);window.addEventListener("resize",schedule);document.addEventListener("click",function(e){var t=e.target&&e.target.closest&&e.target.closest("[data-action]");if(t){var a=t.getAttribute("data-action");if(a){e.preventDefault();e.stopPropagation();window.parent.postMessage({type:"_rhr_opt",text:a},"*")}}schedule()},true);document.addEventListener("toggle",schedule,true);document.addEventListener("transitionend",schedule,true);document.addEventListener("animationend",schedule,true);if(window.MutationObserver)new MutationObserver(schedule).observe(document.documentElement,{attributes:true,childList:true,subtree:true,characterData:true});if(window.ResizeObserver){var ro=new ResizeObserver(schedule);ro.observe(document.documentElement);if(document.body)ro.observe(document.body)}setTimeout(send,80);setTimeout(send,500);setTimeout(send,1600)})();<\/script>`;
+        // 默认字体兜底：iframe 是独立文档，继承不到剧情页的宋体（--story-font），
+        // UA 默认是无衬线（iOS 苹方）。把宋体默认值注入到文档最前面——生成页
+        // 自己声明的 font-family 在后面，仍会覆盖这里，只兜底不强制。
+        const fontFallback = `<style>@font-face{font-family:"Noto Serif SC";src:url("/fonts/interview/noto-serif-sc.woff2") format("woff2");font-weight:300 900;font-display:swap}body{font-family:"Noto Serif SC","Source Han Serif SC","Songti SC","STSong",Georgia,serif}</style>`;
         let h = html;
         // Convert basic markdown inside hidden data divs
         h = h.replace(
@@ -267,10 +285,12 @@ function HtmlPageSegment({ html, onOptionSelect, htmlPageMode }: HtmlPageProps) 
         );
         // Patch template JS: .textContent → .innerHTML so <strong>/<em> tags are preserved
         h = h.replace(/\.textContent\.trim\(\)/g, ".innerHTML.trim()");
+        // 字体兜底放到文档最前，保证生成页自己的样式能覆盖它（仅剧情模式启用）
+        if (serifIframeFallback) h = fontFallback + h;
         if (h.includes("</body>")) h = h.replace("</body>", bridge + "</body>");
         else h = h + bridge;
         return h;
-    }, [html, contained]);
+    }, [html, contained, serifIframeFallback]);
 
     useEffect(() => {
         const handler = (e: MessageEvent) => {
@@ -360,9 +380,11 @@ export interface StoryHtmlRendererProps {
     messageId: string;
     onOptionSelect?: (text: string) => void;
     htmlPageMode?: "auto" | "contained";
+    /** 剧情模式：给 iframe 生成页注入宋体默认字体兜底 */
+    serifIframeFallback?: boolean;
 }
 
-function StoryHtmlRendererInner({ content, messageId, onOptionSelect, htmlPageMode = "auto" }: StoryHtmlRendererProps) {
+function StoryHtmlRendererInner({ content, messageId, onOptionSelect, htmlPageMode = "auto", serifIframeFallback = false }: StoryHtmlRendererProps) {
     const segments = useMemo(() => splitContent(content), [content]);
     const scopeClass = `smsg-${messageId.slice(-8)}`;
     const containerRef = useRef<HTMLDivElement>(null);
@@ -372,14 +394,14 @@ function StoryHtmlRendererInner({ content, messageId, onOptionSelect, htmlPageMo
         <div className="story-richtext" ref={containerRef}>
             {segments.map((seg, i) => {
                 if (seg.type === "html-page") {
-                    return <HtmlPageSegment key={`hp-${i}`} html={seg.content} onOptionSelect={onOptionSelect} htmlPageMode={htmlPageMode} />;
+                    return <HtmlPageSegment key={`hp-${i}`} html={seg.content} onOptionSelect={onOptionSelect} htmlPageMode={htmlPageMode} serifIframeFallback={serifIframeFallback} />;
                 }
                 if (seg.type === "fold") {
                     return (
                         <StoryFoldBlock key={`fold-${i}`} label={seg.label} content={seg.content} scopeClass={scopeClass}>
                             {splitContent(seg.content).map((innerSeg, innerIndex) => {
                                 if (innerSeg.type === "html-page") {
-                                    return <HtmlPageSegment key={`fold-hp-${i}-${innerIndex}`} html={innerSeg.content} onOptionSelect={onOptionSelect} htmlPageMode={htmlPageMode} />;
+                                    return <HtmlPageSegment key={`fold-hp-${i}-${innerIndex}`} html={innerSeg.content} onOptionSelect={onOptionSelect} htmlPageMode={htmlPageMode} serifIframeFallback={serifIframeFallback} />;
                                 }
                                 if (innerSeg.type === "fold") {
                                     return (
