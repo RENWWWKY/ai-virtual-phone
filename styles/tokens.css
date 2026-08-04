@@ -69,19 +69,19 @@
   --c-icon-lilac: #9580B066;
   --c-icon-story: #8B6F5266;
 
-  /* ── 音乐色 (夜光 Lumen · Dark Immersive) ── */
-  --c-music-bg: #0a0b10;
-  /* 页面底色（夜幕黑） */
-  --c-music-bg-mint: rgba(88, 116, 196, 0.16);
-  /* 背景渐变·极光蓝 */
-  --c-music-bg-cream: rgba(122, 96, 202, 0.12);
-  /* 背景渐变·夜紫 */
-  --c-music-bg-lime: rgba(66, 134, 160, 0.12);
-  /* 背景渐变·青蓝 */
-  --c-music-bg-mint-dim: rgba(88, 116, 196, 0.1);
-  /* 背景渐变·极光蓝淡 */
-  --c-music-bg-center: rgba(14, 16, 26, 0.85);
-  /* 背景渐变·中心深蓝 */
+  /* ── 音乐色 (夜光 Lumen · 黑灰中性暗色) ── */
+  --c-music-bg: #0a0a0b;
+  /* 页面底色（碳黑） */
+  --c-music-bg-mint: rgba(150, 150, 158, 0.1);
+  /* 背景渐变·浅灰光 */
+  --c-music-bg-cream: rgba(120, 120, 128, 0.08);
+  /* 背景渐变·中灰光 */
+  --c-music-bg-lime: rgba(90, 90, 96, 0.08);
+  /* 背景渐变·暗灰光 */
+  --c-music-bg-mint-dim: rgba(150, 150, 158, 0.06);
+  /* 背景渐变·浅灰淡 */
+  --c-music-bg-center: rgba(16, 16, 18, 0.85);
+  /* 背景渐变·中心深灰 */
   --c-music-bg-glow: rgba(160, 190, 255, 0.14);
   /* 全屏播放器·月光 */
   --c-music-bg-mist: rgba(90, 120, 200, 0.1);
@@ -90,7 +90,7 @@
   /* 玻璃面板/唱片底 */
   --c-music-surface-solid: rgba(255, 255, 255, 0.13);
   /* 边框/高光 */
-  --c-music-panel: rgba(22, 25, 38, 0.96);
+  --c-music-panel: rgba(24, 24, 28, 0.96);
   /* 不透明面板（弹窗/抽屉） */
   --c-music-glass-dim: rgba(255, 255, 255, 0.09);
   /* 极淡装饰（沟槽/纹路） */

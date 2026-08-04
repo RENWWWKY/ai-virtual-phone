@@ -107,6 +107,7 @@ export type NeteasePlaylistDetail = NeteasePlaylist & {
     subscribedCount?: number;
     commentCount?: number;
     shareCount?: number;
+    subscribed?: boolean;
 };
 
 export type NeteaseHotSearch = {
@@ -214,22 +215,53 @@ export async function searchNetease(query: string, limit = 20): Promise<NeteaseS
     }
 }
 
-/** Get playable URL for a Netease song */
-export async function getNeteasePlayUrl(songId: number): Promise<string | null> {
+export type NeteasePlayInfo = {
+    url: string | null;
+    /** true when the returned url is only a free-trial clip (usually 30s) */
+    trial: boolean;
+    /** human-readable reason when url is null */
+    reason: string;
+};
+
+/** Get playable URL for a Netease song, with a concrete failure reason. */
+export async function getNeteasePlayInfo(songId: number): Promise<NeteasePlayInfo> {
     const base = neteaseBase();
-    if (!base) return null;
+    if (!base) return { url: null, trial: false, reason: "音乐 API 未配置" };
     try {
         const resp = await fetch(withNeteaseParams(`${base}/song/url?id=${songId}`));
         const data = await resp.json();
-        const url = data?.data?.[0]?.url;
-        if (!url || typeof url !== "string") return null;
-        // Netease returns http:// CDN links; on an HTTPS page the browser blocks
-        // them as mixed content, so the audio never loads. The CDN serves https.
-        return url.replace(/^http:\/\//, "https://");
+        const d = data?.data?.[0];
+        const url = d?.url;
+        if (url && typeof url === "string") {
+            // Netease returns http:// CDN links; on an HTTPS page the browser blocks
+            // them as mixed content, so the audio never loads. The CDN serves https.
+            return { url: url.replace(/^http:\/\//, "https://"), trial: !!d?.freeTrialInfo, reason: "" };
+        }
+        const fee = d?.fee;
+        const loggedIn = !!loadNeteaseCookie();
+        if (fee === 1) {
+            return { url: null, trial: false, reason: loggedIn ? "VIP 歌曲，当前账号没有黑胶会员" : "VIP 歌曲，请先在设置中登录网易云账号" };
+        }
+        if (fee === 4) {
+            return { url: null, trial: false, reason: "付费专辑歌曲，需购买后才能播放" };
+        }
+        // Ask check/music for a human-readable reason (e.g. 无版权)
+        try {
+            const chk = await fetch(withNeteaseParams(`${base}/check/music?id=${songId}&timestamp=${Date.now()}`)).then(r => r.json());
+            const msg = chk?.message ? String(chk.message).replace(/^亲爱的[,，]?/, "").trim() : "";
+            if (chk?.success === false && msg) return { url: null, trial: false, reason: msg };
+        } catch { /* check endpoint unavailable — fall through */ }
+        return { url: null, trial: false, reason: "该歌曲暂时无法播放" };
     } catch (e) {
         console.warn("[MusicService] Get play URL failed:", e);
-        return null;
+        return { url: null, trial: false, reason: "网络异常，加载失败" };
     }
+}
+
+/** Get playable URL for a Netease song */
+export async function getNeteasePlayUrl(songId: number): Promise<string | null> {
+    const info = await getNeteasePlayInfo(songId);
+    return info.url;
 }
 
 /** Get lyrics for a Netease song */
@@ -474,6 +506,7 @@ export async function getPlaylistDetail(playlistId: number): Promise<NeteasePlay
             subscribedCount: p.subscribedCount,
             commentCount: p.commentCount,
             shareCount: p.shareCount,
+            subscribed: !!p.subscribed,
         };
     } catch { return null; }
 }
@@ -491,18 +524,22 @@ function mapComment(c: any): NeteaseComment {
     };
 }
 
+/** Netease comment resource type: 0 = song, 2 = playlist */
+export type NeteaseCommentResType = 0 | 2;
+
 export async function getSongComments(songId: number, limit = 20): Promise<NeteaseComment[]> {
     const page = await getSongCommentPage(songId, 0, limit);
     return page.hotComments.length ? page.hotComments : page.comments;
 }
 
-/** Paged song comments: hot comments arrive on the first page only. */
-export async function getSongCommentPage(songId: number, offset = 0, limit = 20): Promise<NeteaseCommentPage> {
+/** Paged comments (song or playlist): hot comments arrive on the first page only. */
+export async function getSongCommentPage(songId: number, offset = 0, limit = 20, resType: NeteaseCommentResType = 0): Promise<NeteaseCommentPage> {
     const base = neteaseBase();
     const empty: NeteaseCommentPage = { hotComments: [], comments: [], total: 0, hasMore: false };
     if (!base) return empty;
     try {
-        const resp = await fetch(withNeteaseParams(`${base}/comment/music?id=${songId}&limit=${limit}&offset=${offset}&timestamp=${Date.now()}`));
+        const endpoint = resType === 2 ? "comment/playlist" : "comment/music";
+        const resp = await fetch(withNeteaseParams(`${base}/${endpoint}?id=${songId}&limit=${limit}&offset=${offset}&timestamp=${Date.now()}`));
         const data = await resp.json();
         const mapList = (list: any) => (Array.isArray(list) ? list.map(mapComment).filter((c: NeteaseComment) => c.content) : []);
         return {
@@ -515,29 +552,45 @@ export async function getSongCommentPage(songId: number, offset = 0, limit = 20)
 }
 
 /** Floor replies of a comment */
-export async function getFloorComments(songId: number, parentCommentId: number, limit = 20): Promise<NeteaseComment[]> {
+export async function getFloorComments(songId: number, parentCommentId: number, limit = 20, resType: NeteaseCommentResType = 0): Promise<NeteaseComment[]> {
     const base = neteaseBase();
     if (!base) return [];
     try {
-        const resp = await fetch(withNeteaseParams(`${base}/comment/floor?parentCommentId=${parentCommentId}&id=${songId}&type=0&limit=${limit}&timestamp=${Date.now()}`));
+        const resp = await fetch(withNeteaseParams(`${base}/comment/floor?parentCommentId=${parentCommentId}&id=${songId}&type=${resType}&limit=${limit}&timestamp=${Date.now()}`));
         const data = await resp.json();
         const comments = data?.data?.comments || [];
         return Array.isArray(comments) ? comments.map(mapComment).filter((c: NeteaseComment) => c.content) : [];
     } catch { return []; }
 }
 
-/** Post a comment on a song (requires Netease login cookie) */
-export async function postSongComment(songId: number, content: string): Promise<{ ok: boolean; message: string }> {
+/** Post a comment on a song or playlist (requires Netease login cookie) */
+export async function postSongComment(songId: number, content: string, resType: NeteaseCommentResType = 0): Promise<{ ok: boolean; message: string }> {
     const base = neteaseBase();
     if (!base) return { ok: false, message: "API 未配置" };
     if (!loadNeteaseCookie()) return { ok: false, message: "发送评论需要先登录网易云账号" };
     try {
-        const resp = await fetch(withNeteaseParams(`${base}/comment?t=1&type=0&id=${songId}&content=${encodeURIComponent(content)}&timestamp=${Date.now()}`));
+        const resp = await fetch(withNeteaseParams(`${base}/comment?t=1&type=${resType}&id=${songId}&content=${encodeURIComponent(content)}&timestamp=${Date.now()}`));
         const data = await resp.json();
         if (data?.code === 200) return { ok: true, message: "评论已发送" };
         return { ok: false, message: data?.message || data?.msg || "发送失败" };
     } catch (e) {
         return { ok: false, message: e instanceof Error ? e.message : "发送失败" };
+    }
+}
+
+/** Subscribe / unsubscribe a playlist (requires Netease login cookie) */
+export async function subscribePlaylist(playlistId: number, subscribe: boolean): Promise<{ ok: boolean; message: string }> {
+    const base = neteaseBase();
+    if (!base) return { ok: false, message: "API 未配置" };
+    if (!loadNeteaseCookie()) return { ok: false, message: "收藏歌单需要先登录网易云账号" };
+    try {
+        const resp = await fetch(withNeteaseParams(`${base}/playlist/subscribe?t=${subscribe ? 1 : 2}&id=${playlistId}&timestamp=${Date.now()}`));
+        const data = await resp.json();
+        if (data?.code === 200) return { ok: true, message: subscribe ? "已收藏歌单" : "已取消收藏" };
+        if (data?.code === 501) return { ok: true, message: "已收藏过这个歌单" };
+        return { ok: false, message: data?.message || data?.msg || "操作失败" };
+    } catch (e) {
+        return { ok: false, message: e instanceof Error ? e.message : "操作失败" };
     }
 }
 
