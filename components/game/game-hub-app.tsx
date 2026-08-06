@@ -53,6 +53,7 @@ import {
   deleteInstalledGame,
   getGameCatalog,
   installGameTemplate,
+  upsertLocalTestGame,
   loadGameDrafts,
   loadGameSave,
   loadGameState,
@@ -698,7 +699,7 @@ function draftFromTemplate(template: GameTemplate): GameTemplateDraft {
   };
 }
 
-export function GameHubApp({ onClose }: { onClose: () => void }) {
+export function GameHubApp({ onClose, autoOpenLocalId }: { onClose: () => void; autoOpenLocalId?: string }) {
   const { account } = useAccount();
   const [mainView, setMainView] = useState<GameMainView>("hall");
   const [studioMode, setStudioMode] = useState<GameStudioMode>("drafts");
@@ -835,6 +836,11 @@ export function GameHubApp({ onClose }: { onClose: () => void }) {
   const editingTemplate = useMemo(
     () => editingTemplateId ? communityGames.find(item => item.id === editingTemplateId) ?? null : null,
     [communityGames, editingTemplateId],
+  );
+  // 正在编辑的草稿是否已关联发布条目：关联时发布按钮显示「更新发布」（发布=同步更新原条目）
+  const editingDraftLinked = useMemo(
+    () => editingDraftId ? Boolean(drafts.find(item => item.id === editingDraftId)?.publishedTemplateId) : false,
+    [drafts, editingDraftId],
   );
 
   useEffect(() => {
@@ -1202,6 +1208,19 @@ export function GameHubApp({ onClose }: { onClose: () => void }) {
     setSelectedTemplate(null);
   }
 
+  // 工坊预览等场景：带 autoOpenLocalId 打开时，挂载后直接进入该游戏运行时
+  const autoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (!autoOpenLocalId || autoOpenedRef.current) return;
+    const item = loadGameState().installedGames.find(installed => installed.localId === autoOpenLocalId);
+    if (!item) return;
+    autoOpenedRef.current = true;
+    setMainView("studio");
+    setStudioMode("drafts");
+    openRuntime(item);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenLocalId]);
+
   function closeRuntime(): void {
     gameRoomRef.current?.leave();
     gameRoomRef.current = null;
@@ -1270,17 +1289,27 @@ export function GameHubApp({ onClose }: { onClose: () => void }) {
     setDraft(normalizedDraft);
     setDrafts(current => {
       const existing = current.find(item => item.id === id);
+      // 编辑已发布游戏时存草稿：写入关联，草稿标签显示「已发布」，之后发布即同步更新原条目
+      const publishedTemplateId = editingTemplate?.id || existing?.publishedTemplateId;
       return saveGameDrafts([
         {
           id,
           title,
           draft: normalizedDraft,
+          publishedTemplateId,
+          // 关联草稿存了新内容但还没提交更新：卡片在「已发布」旁提示有未发布改动
+          hasUnpublishedChanges: publishedTemplateId ? true : undefined,
           createdAt: existing?.createdAt || now,
           updatedAt: now,
         },
         ...current.filter(item => item.id !== id),
       ]);
     });
+    // 从「修改已发布」进入的存草稿：转入草稿编辑模式，后续发布走草稿关联（同步更新原条目）
+    if (editingTemplate?.id) {
+      setEditingTemplateId(null);
+      setEditingDraftId(id);
+    }
     showNotice("success", "草稿已保存");
   }
 
@@ -1440,40 +1469,64 @@ export function GameHubApp({ onClose }: { onClose: () => void }) {
     return localId.startsWith(GAME_PREVIEW_LOCAL_ID_PREFIX);
   }
 
-  function previewDraft(): void {
+  function localTestDraft(): void {
     try {
-      const template = createTemplateFromDraft(draft, state, editingTemplate);
       const now = new Date().toISOString();
-      previewGameSaveRef.current = null;
-      openRuntime({
-        localId: `${GAME_PREVIEW_LOCAL_ID_PREFIX}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-        remoteTemplateId: template.id,
-        installedAt: now,
-        templateSnapshot: { ...template, source: "local", updatedAt: now },
-        roleAssignments: [],
-        status: "installed",
-        playCount: 0,
-      });
+      const template = { ...createTemplateFromDraft(draft, state, editingTemplate), source: "local" as const, updatedAt: now };
+      // 稳定 key：优先用草稿 id；若是未保存的新草稿，先存草稿再测，保证重复测试幂等
+      let draftId = editingDraftId;
+      if (!draftId) {
+        draftId = createDraftId();
+        const title = draft.title.trim() || "未命名游戏";
+        setEditingDraftId(draftId);
+        setDrafts(current => saveGameDrafts([{ id: draftId as string, title, draft, createdAt: now, updatedAt: now }, ...current]));
+      }
+      const result = upsertLocalTestGame(draftId, template);
+      if (!result.ok || !result.installedGame) {
+        showNotice("error", result.error || "当前草稿无法测试");
+        return;
+      }
+      setState(result.state);
+      openRuntime(result.installedGame);
     } catch (err) {
-      showNotice("error", err instanceof Error ? err.message : "当前草稿无法试玩");
+      showNotice("error", err instanceof Error ? err.message : "当前草稿无法测试");
     }
   }
 
   async function publishDraft(): Promise<void> {
     setPublishing(true);
     try {
-      const template = await prepareTemplateForPublish(createTemplateFromDraft(draft, state, editingTemplate, {
+      // 关联发布：修改已发布模式用该模板；否则草稿带关联时解析出已发布条目 → 同步更新同一条目
+      let existingPublished = editingTemplate;
+      const linkedId = !existingPublished && editingDraftId
+        ? drafts.find(item => item.id === editingDraftId)?.publishedTemplateId
+        : undefined;
+      if (!existingPublished && linkedId) {
+        try {
+          const known = publishedGames.find(item => item.id === linkedId);
+          existingPublished = known ? await ensureFullGameTemplate(known) : await fetchGameHallTemplate(linkedId);
+        } catch {
+          existingPublished = null; // 大厅条目已不存在：退化为发布新条目，成功后改写关联
+        }
+      }
+      const template = await prepareTemplateForPublish(createTemplateFromDraft(draft, state, existingPublished, {
         anonymous: publishAnonymously,
         authorId: account.id,
         authorName: state.displayName,
         authorAvatar: state.avatarUrl,
       }));
-      const published = editingTemplate
+      const published = existingPublished
         ? await updateGameTemplate(template)
         : await publishGameTemplate(template);
       setCommunityGames(current => mergeTemplate(current, published));
+      // 发布后保留草稿并写入关联：草稿标签变「已发布」，下次发布即同步更新，不产生新条目
       if (editingDraftId) {
-        setDrafts(current => saveGameDrafts(current.filter(item => item.id !== editingDraftId)));
+        const now = new Date().toISOString();
+        setDrafts(current => saveGameDrafts(current.map(item =>
+          item.id === editingDraftId
+            ? { ...item, title: draft.title.trim() || item.title, draft, publishedTemplateId: published.id, hasUnpublishedChanges: undefined, updatedAt: now }
+            : item,
+        )));
       }
       setEditingDraftId(null);
       setEditingTemplateId(null);
@@ -1481,7 +1534,7 @@ export function GameHubApp({ onClose }: { onClose: () => void }) {
       setCreatorPageOpen(false);
       setCreatorGuideOpen(false);
       setMainView("studio");
-      showNotice("success", editingTemplate ? "游戏已同步修改" : "游戏已发布到共享大厅");
+      showNotice("success", existingPublished ? "游戏已同步修改" : "游戏已发布到共享大厅");
     } catch (err) {
       showNotice("error", err instanceof Error ? err.message : "发布失败");
     } finally {
@@ -1493,6 +1546,12 @@ export function GameHubApp({ onClose }: { onClose: () => void }) {
     try {
       await deleteGameTemplate({ id: template.id, authorId: template.authorId });
       setCommunityGames(current => current.filter(item => item.id !== template.id));
+      // 清掉指向该条目的草稿关联：标签回到「未发布」，之后发布会作为新条目
+      setDrafts(current => current.some(item => item.publishedTemplateId === template.id)
+        ? saveGameDrafts(current.map(item => item.publishedTemplateId === template.id
+          ? { ...item, publishedTemplateId: undefined, hasUnpublishedChanges: undefined }
+          : item))
+        : current);
       showNotice("success", "已从共享大厅删除");
     } catch (err) {
       showNotice("error", err instanceof Error ? err.message : "删除失败");
@@ -2295,7 +2354,8 @@ export function GameHubApp({ onClose }: { onClose: () => void }) {
         <div className="game-studio-list-copy">
           <div>
             <strong>{item.title}</strong>
-            <span>草稿</span>
+            <span data-pub={item.publishedTemplateId ? "yes" : "no"}>{item.publishedTemplateId ? "已发布" : "未发布"}</span>
+            {item.publishedTemplateId && item.hasUnpublishedChanges ? <i className="game-dirty-hint">有未发布改动</i> : null}
           </div>
           <time>{formatGameDate(item.updatedAt)}</time>
         </div>
@@ -2740,6 +2800,7 @@ export function GameHubApp({ onClose }: { onClose: () => void }) {
                   </div>
                 )
               ) : null}
+
               </>
             ) : null}
 
@@ -2889,11 +2950,11 @@ export function GameHubApp({ onClose }: { onClose: () => void }) {
                 </div>
                 <div className="game-studio-panel game-publish-actions-panel">
                   <div className="game-studio-actions">
-                    <button type="button" onClick={previewDraft}><Play size={14} /> 试玩</button>
+                    <button type="button" onClick={localTestDraft}><Play size={14} /> 本机测试</button>
                     <button type="button" onClick={saveDraft}><Archive size={14} /> 存草稿</button>
                     <button type="button" className="is-primary" disabled={publishing} onClick={() => void publishDraft()}>
                       <Send size={14} />
-                      {publishing ? "同步中" : editingTemplate ? "保存修改" : "发布共享"}
+                      {publishing ? "同步中" : editingTemplate ? "保存修改" : editingDraftLinked ? "更新发布" : "发布共享"}
                     </button>
                   </div>
                 </div>
