@@ -127,18 +127,29 @@
   justify-content: flex-end;
   gap: 4px;
 }
+/* 标题做成圆角悬浮块：液态玻璃小胶囊，标题与副标题行距收紧 */
 .qa-header-center {
   flex-direction: column;
-  gap: 1px;
+  align-items: center;
+  gap: 0;
+  padding: 4px 16px 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.55);
+  -webkit-backdrop-filter: blur(16px) saturate(1.5);
+  backdrop-filter: blur(16px) saturate(1.5);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow: 0 2px 10px rgba(40, 34, 20, 0.07), inset 0 1px 1px rgba(255, 255, 255, 0.8);
 }
 .qa-header-title {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   letter-spacing: 0.01em;
+  line-height: 1.2;
   color: var(--qa-text-primary);
 }
 .qa-header-sub {
-  font-size: 11px;
+  font-size: 10px;
+  line-height: 1.15;
   color: var(--qa-text-tertiary);
   letter-spacing: 0.02em;
 }
@@ -218,6 +229,15 @@
 .qa-msg-assistant {
   color: var(--qa-text-primary);
   word-break: break-word;
+}
+
+/* 消息文本可长按选择复制（.phone-workspace 全局禁选，这里按内容白名单放开） */
+.qa-msg-user,
+.qa-msg-assistant,
+.qa-markdown,
+.qa-tool-result {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .qa-thinking {
@@ -544,7 +564,51 @@
   background: linear-gradient(180deg, transparent 0%, var(--qa-bg-canvas) 55%);
 }
 /* 两行卡片：上文本框，下工具栏。无描边，柔和阴影 */
+/* 上下文用量：输入栏右上方的小装饰条，满 100% 自动压缩后回落 */
+.qa-context-meter {
+  position: absolute;
+  top: -18px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  pointer-events: none;
+}
+.qa-context-meter-track {
+  width: 44px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(60, 50, 90, 0.12);
+  overflow: hidden;
+}
+.qa-context-meter-track i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(147, 122, 246, 0.55), rgba(147, 122, 246, 0.95));
+  transition: width 0.4s ease;
+}
+.qa-context-meter-label {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: var(--qa-text-tertiary);
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.qa-github-btn.is-active {
+  color: var(--qa-accent);
+}
+.qa-context-meter.is-compacting .qa-context-meter-track i {
+  background: linear-gradient(90deg, rgba(240, 170, 80, 0.6), rgba(240, 170, 80, 0.95));
+  animation: qa-compacting-pulse 1s ease-in-out infinite alternate;
+}
+@keyframes qa-compacting-pulse {
+  from { opacity: 0.5; }
+  to { opacity: 1; }
+}
+
 .qa-composer {
+  position: relative;
   pointer-events: auto;
   display: flex;
   flex-direction: column;
@@ -592,6 +656,114 @@
   display: flex;
   align-items: center;
   gap: 7px;
+  min-width: 0;
+}
+.qa-composer-toolbar .qa-circle-btn {
+  flex-shrink: 0;
+}
+.qa-mode-pill {
+  flex-shrink: 0;
+}
+
+/* 附图：+ 号入口、缩略图条、消息内图片、全屏查看 */
+.qa-attach-btn {
+  color: var(--qa-text-secondary);
+}
+.qa-attach-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 2px 2px 0;
+}
+.qa-attach-thumb {
+  position: relative;
+}
+.qa-attach-view {
+  display: block;
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(60, 50, 90, 0.12);
+  padding: 0;
+  background: none;
+}
+.qa-attach-view img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.qa-attach-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(40, 34, 60, 0.75);
+  color: #fff;
+}
+.qa-msg-images {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.qa-msg-image {
+  display: block;
+  width: 108px;
+  height: 108px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: none;
+  padding: 0;
+  background: none;
+}
+.qa-msg-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.qa-image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(12, 10, 20, 0.86);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+.qa-image-viewer img {
+  max-width: 94vw;
+  max-height: 86vh;
+  border-radius: 10px;
+  object-fit: contain;
+}
+.qa-image-viewer-close {
+  position: absolute;
+  /* 避开手机壳状态栏（独立层级，会拦截点击） */
+  top: calc(var(--page-header-safe-top, 48px) + 10px);
+  right: 14px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+.qa-tool-drafting {
+  margin-top: 8px;
 }
 .qa-composer-spacer {
   flex: 1;
@@ -661,6 +833,13 @@
   background: rgba(255, 255, 255, 0.5);
   border: 1px solid rgba(255, 255, 255, 0.6);
   box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.8);
+  /* 模型名过长时省略，避免把右侧按钮挤出输入栏 */
+  max-width: 34vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
 }
 .qa-mode-pill {
   cursor: pointer;
@@ -787,6 +966,13 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+/* 横排变体：取消/确认并列一行 */
+.qa-devnotice-actions.is-row {
+  flex-direction: row;
+}
+.qa-devnotice-actions.is-row .qa-devnotice-btn {
+  flex: 1;
 }
 .qa-devnotice-btn {
   width: 100%;
@@ -995,6 +1181,17 @@
 .qa-segment-btn.is-active {
   background: var(--qa-bg-raised);
   color: var(--qa-text-primary);
+  font-weight: 600;
+}
+/* 选中项加紫色下划线，让选中态一眼可见 */
+.qa-segment-btn.is-active::after {
+  content: "";
+  display: block;
+  width: 28px;
+  height: 3px;
+  margin: 3px auto 0;
+  border-radius: 2px;
+  background: var(--qa-accent);
 }
 
 /* 提交提案卡片 */
@@ -1213,7 +1410,48 @@
   flex-shrink: 0;
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   padding: 10px 14px calc(env(safe-area-inset-bottom, 0px) + 16px);
+}
+/* 工坊配置：次级样式，与新对话并列 */
+.qa-drawer-settings {
+  background: var(--qa-bg-raised);
+  color: var(--qa-text-secondary);
+  box-shadow: none;
+}
+
+/* 工坊配置面板 */
+.qa-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+  text-align: left;
+}
+.qa-settings-field > span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--qa-text-secondary);
+}
+.qa-settings-field input {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(60, 50, 90, 0.14);
+  background: var(--qa-bg-raised);
+  color: var(--qa-text-primary);
+  font-size: 14px;
+  outline: none;
+}
+.qa-settings-field input:focus {
+  border-color: var(--qa-accent);
+}
+.qa-settings-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--qa-text-tertiary);
+  text-align: left;
 }
 .qa-drawer-new {
   display: inline-flex;
