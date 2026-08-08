@@ -3,7 +3,10 @@
 // 黑市剧场（工作室·本机测试）。全部只写浏览器本地存储，可在对应 UI 里删除，不碰远端。
 
 import { getQaPageChars } from "./qa-prefs";
+import { createCustomAppPackageFile } from "./custom-app-package";
+import { downloadFile } from "./download-utils";
 import {
+    parseGameRoleSlots,
     upsertLocalTestGame,
     isLocalTestGameId,
     loadGameState,
@@ -25,8 +28,10 @@ import {
     installCustomAppAsync,
     generateCustomAppRuntimeId,
     normalizeCustomAppManifestId,
+    loadCustomAppPackage,
     CUSTOM_APP_PLACE_DESKTOP_EVENT,
 } from "./custom-app-storage";
+import { applyCustomAppRegistrationsAsync, formatCustomAppRegistrationSummary } from "./custom-app-registration";
 import { CUSTOM_APP_CREATOR_GUIDE_MD } from "./custom-app-creator-guide";
 import type { CustomAppPermission, InstalledCustomApp } from "./custom-app-types";
 
@@ -172,6 +177,7 @@ const installAppTool: QaContentTool = {
             name: { type: "string", description: "应用名（显示在桌面）" },
             html: { type: "string", description: "完整单文件 HTML（含内联 CSS/JS）" },
             description: { type: "string", description: "一句话简介" },
+            permissions: { type: "array", items: { type: "string" }, description: "可选：覆盖默认权限集（如需要 chat.tools 等）。不填用单文件默认权限" },
         },
         required: ["name", "html"],
     },
@@ -182,6 +188,7 @@ const installAppTool: QaContentTool = {
         "    · name (必填) — 应用名（会显示在桌面）",
         "    · html (必填) — 完整单文件 HTML（含内联 CSS/JS）",
         "    · description (可选) — 一句话简介",
+        "    · permissions (可选) — 权限数组，覆盖默认权限集（如 chat.tools）；不填用单文件默认权限",
         '  调用：[执行动作:安装本机应用({"name":"番茄钟","html":"<!doctype html>…"})]',
     ],
     async run(args, context) {
@@ -190,6 +197,11 @@ const installAppTool: QaContentTool = {
         if (!name) return "缺少 name（应用名）。";
         if (!html.trim()) return "缺少 html（完整单文件 HTML 内容）。";
         const description = text(args.description, 200);
+        // 可选自定义权限：透传字符串，读取时 normalizeInstalledApp 会过滤无效项
+        const customPerms = Array.isArray(args.permissions)
+            ? ([...new Set(args.permissions.filter((v): v is string => typeof v === "string" && v.length < 60))] as CustomAppPermission[])
+            : null;
+        const perms = customPerms?.length ? customPerms : SINGLE_HTML_APP_PERMISSIONS;
         const now = new Date().toISOString();
 
         const apps = loadInstalledCustomApps();
@@ -198,6 +210,8 @@ const installAppTool: QaContentTool = {
             const updated: InstalledCustomApp = {
                 ...existing,
                 entryHtml: html,
+                permissions: customPerms?.length ? perms : existing.permissions,
+                manifest: customPerms?.length ? { ...existing.manifest, permissions: perms } : existing.manifest,
                 description: description || existing.description,
                 // 关联市场版的 APP 被改动：与 UI 编辑/换包一致，标记有未发布改动
                 hasUnpublishedChanges: existing.marketItemId ? true : existing.hasUnpublishedChanges,
@@ -215,13 +229,13 @@ const installAppTool: QaContentTool = {
             version: "1.0.0",
             description: description || undefined,
             entryHtml: html,
-            permissions: SINGLE_HTML_APP_PERMISSIONS,
+            permissions: perms,
             manifest: {
                 id: normalizeCustomAppManifestId(name),
                 name,
                 version: "1.0.0",
                 entry: "index.html",
-                permissions: SINGLE_HTML_APP_PERMISSIONS,
+                permissions: perms,
             },
             assets: {},
             installedAt: now,
@@ -232,6 +246,152 @@ const installAppTool: QaContentTool = {
         window.dispatchEvent(new CustomEvent(CUSTOM_APP_PLACE_DESKTOP_EVENT, { detail: { appId: app.id } }));
         context?.onContentCreated?.({ type: "app", refId: app.id, title: name });
         return `✓ 已安装本机应用「${name}」。请告诉用户：点输入框旁的预览按钮即可直接打开测试；应用图标也已放到桌面，长按可卸载。`;
+    },
+};
+
+// ── 应用包暂存区（分段写入 → 组包安装）──────────────
+// 解决两个问题：① 模型单次输出有 max_tokens 上限，大 HTML 一次写不完——分多轮
+// 追加暂存；② 单文件安装没有 manifest 声明（权限 / chat.tools 工具）——暂存区
+// 支持完整应用包（manifest.json + 入口 + presets.json + 资源），组包后与上传 zip 等价。
+
+type StagedAppFile = { text?: string; base64?: string };
+const APP_STAGING = new Map<string, StagedAppFile>();
+const STAGE_MAX_FILES = 40;
+const STAGE_MAX_FILE_CHARS = 2_000_000;
+const STAGE_MAX_TOTAL_CHARS = 10_000_000;
+
+function stagePath(value: unknown): string {
+    return String(value ?? "").replace(/\\/g, "/").replace(/^\.?\//, "").replace(/^\/+/, "").trim();
+}
+
+function stagingSummary(): string {
+    if (APP_STAGING.size === 0) return "（暂存区为空）";
+    return [...APP_STAGING.entries()]
+        .map(([path, f]) => `${path}(${(f.text ?? f.base64 ?? "").length})`)
+        .join("、");
+}
+
+const stageAppFileTool: QaContentTool = {
+    name: "暂存应用文件",
+    nativeName: "stage_app_file",
+    parameters: {
+        type: "object",
+        properties: {
+            path: { type: "string", description: "包内路径，如 manifest.json / index.html / presets.json / icon.png" },
+            content: { type: "string", description: "文件内容（文本；二进制文件传 base64 并置 base64=true）" },
+            append: { type: "boolean", description: "true=追加到该文件已暂存内容末尾（大 HTML 分多轮写入用）" },
+            base64: { type: "boolean", description: "true=content 是 base64 编码的二进制（如图标）" },
+        },
+        required: ["path", "content"],
+    },
+    description:
+        "把应用包文件写入暂存区（不落盘）。大 HTML 超过单次输出上限时分多轮写：第一轮写骨架，后续轮 append=true 追加，绝不会被 max_tokens 截断。完整包需要 manifest.json（含 id/name/version/entry/permissions，可声明 chat.tools 等权限与 extensions.tools 工具）+ 入口 HTML；presets.json、图标等资源文件也可暂存。全部就绪后用「安装暂存应用」组包安装。",
+    schemaLines: [
+        "  参数：",
+        "    · path (必填) — 包内路径（manifest.json / index.html / presets.json / icon.png…）",
+        "    · content (必填) — 文件内容；二进制传 base64 并置 base64=true",
+        "    · append (可选) — true=追加到已暂存内容末尾（大文件分轮写）",
+        '  调用：[执行动作:暂存应用文件({"path":"index.html","content":"<!doctype html>…","append":true})]',
+    ],
+    async run(args) {
+        const path = stagePath(args.path);
+        if (!path || path.includes("..") || path.length > 100) return "path 无效（相对包内路径，不允许 ..）。";
+        const content = typeof args.content === "string" ? args.content : "";
+        if (!content) return "缺少 content。";
+        if (APP_STAGING.size >= STAGE_MAX_FILES && !APP_STAGING.has(path)) return `暂存文件数已达上限 ${STAGE_MAX_FILES}。`;
+        const isBase64 = args.base64 === true;
+        const existing = APP_STAGING.get(path);
+        let next: StagedAppFile;
+        if (args.append === true && existing?.text != null && !isBase64) {
+            next = { text: existing.text + content };
+        } else if (args.append === true && existing?.base64 != null) {
+            return `${path} 是二进制暂存，不支持追加。`;
+        } else {
+            next = isBase64 ? { base64: content.replace(/\s+/g, "") } : { text: content };
+        }
+        const size = (next.text ?? next.base64 ?? "").length;
+        if (size > STAGE_MAX_FILE_CHARS) return `单文件暂存超限（${size} > ${STAGE_MAX_FILE_CHARS} 字符）。`;
+        let total = size;
+        for (const [k, f] of APP_STAGING) { if (k !== path) total += (f.text ?? f.base64 ?? "").length; }
+        if (total > STAGE_MAX_TOTAL_CHARS) return `暂存区总量超限（${total} > ${STAGE_MAX_TOTAL_CHARS} 字符）。`;
+        APP_STAGING.set(path, next);
+        return `✓ 已暂存 ${path}（当前 ${size.toLocaleString()} 字符${args.append === true ? "，本次为追加" : ""}）。暂存区：${stagingSummary()}。继续追加或暂存其他文件；全部就绪后用「安装暂存应用」。`;
+    },
+};
+
+const installStagedAppTool: QaContentTool = {
+    name: "安装暂存应用",
+    nativeName: "install_staged_app",
+    parameters: {
+        type: "object",
+        properties: { clear: { type: "boolean", description: "true=不安装，只清空暂存区（重来）" } },
+    },
+    description:
+        "把暂存区的文件组成应用包并安装到本机（等价上传 zip：manifest 声明的权限 / chat.tools / extensions.tools / presets 全部生效）。要求暂存区已有 manifest.json 与入口 HTML。同名/同 manifest id 应用会原地更新（保留应用数据与市场关联）。安装成功后暂存区自动清空。",
+    schemaLines: [
+        "  参数：",
+        "    · clear (可选) — true=不安装，只清空暂存区",
+        '  调用：[执行动作:安装暂存应用({})]',
+    ],
+    async run(args, context) {
+        if (args.clear === true) {
+            APP_STAGING.clear();
+            return "✓ 暂存区已清空。";
+        }
+        if (APP_STAGING.size === 0) return "暂存区为空。先用「暂存应用文件」写入 manifest.json 与入口 HTML。";
+        if (!APP_STAGING.has("manifest.json")) return `暂存区缺少 manifest.json。当前：${stagingSummary()}`;
+        try {
+            const JSZip = (await import("jszip")).default;
+            const zip = new JSZip();
+            for (const [path, f] of APP_STAGING) {
+                if (f.base64 != null) {
+                    const binary = atob(f.base64);
+                    const bytes = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+                    zip.file(path, bytes);
+                } else {
+                    zip.file(path, f.text ?? "");
+                }
+            }
+            const blob = await zip.generateAsync({ type: "blob", mimeType: "application/zip" });
+            const loaded = await loadCustomAppPackage(new File([blob], "staged-app.zip", { type: "application/zip" }));
+
+            // 同名 / 同 manifest id 原地更新：保留运行时 id（应用数据不丢）与市场关联
+            const apps = loadInstalledCustomApps();
+            const existing = apps.find(
+                (a) => a.manifest?.id === loaded.manifest?.id || a.name.trim().toLowerCase() === loaded.name.trim().toLowerCase(),
+            );
+            let installed: InstalledCustomApp;
+            if (existing) {
+                installed = {
+                    ...loaded,
+                    id: existing.id,
+                    installedAt: existing.installedAt,
+                    marketItemId: existing.marketItemId,
+                    hasUnpublishedChanges: existing.marketItemId ? true : existing.hasUnpublishedChanges,
+                };
+                await saveInstalledCustomAppsAsync([installed, ...apps.filter((a) => a.id !== existing.id)]);
+            } else {
+                installed = await installCustomAppAsync(loaded);
+                window.dispatchEvent(new CustomEvent(CUSTOM_APP_PLACE_DESKTOP_EVENT, { detail: { appId: installed.id } }));
+            }
+            // 应用 manifest 声明（presets 等注册）
+            let regNote = "";
+            try {
+                const summary = await applyCustomAppRegistrationsAsync(installed);
+                const formatted = formatCustomAppRegistrationSummary(summary);
+                if (formatted) regNote = `已登记：${formatted}。`;
+            } catch {
+                // 注册失败不阻塞安装
+            }
+            APP_STAGING.clear();
+            context?.onContentCreated?.({ type: "app", refId: installed.id, title: installed.name });
+            const toolCount = installed.manifest?.extensions?.tools?.length ?? 0;
+            const toolNote = toolCount > 0 ? `声明了 ${toolCount} 个聊天工具。` : "";
+            return `✓ 已${existing ? "更新" : "安装"}应用「${installed.name}」（完整应用包）。${toolNote}${regNote}请告诉用户：点输入框旁的预览按钮可直接打开，或到桌面找「${installed.name}」。`;
+        } catch (error) {
+            return `组包安装失败：${error instanceof Error ? error.message : String(error)}。暂存区已保留，可修正后重试（清空用 clear=true）。`;
+        }
     },
 };
 
@@ -281,8 +441,9 @@ const installGameTool: QaContentTool = {
             pickerHtml: { type: "string", description: "角色选择界面 HTML（启用 roleSlots 时必填）" },
             subtitle: { type: "string" }, synopsis: { type: "string" }, playNote: { type: "string" },
             tags: { type: "array", items: { type: "string" } },
+            fromDraft: { type: "boolean", description: "true=从同标题草稿读取全部内容安装（分段写完大游戏后用，不必重新传 gameHtml）" },
         },
-        required: ["title", "gameHtml"],
+        required: ["title"],
     },
     description:
         "把写好的小游戏安装到 游戏大厅 → 创作工坊 → 本机测试（不发布市场）。同标题重复安装会更新同一条目。写之前先读「创作指南」type=game 了解游戏 HTML 与宿主的通信协议。",
@@ -293,15 +454,23 @@ const installGameTool: QaContentTool = {
         "    · roleSlots (可选) — 角色槽位数组 [{id,label,description,required,min,max}]；不填则为无角色游戏",
         "    · pickerHtml (启用 roleSlots 时必填) — 角色选择界面 HTML",
         "    · subtitle / synopsis / playNote / tags (可选) — 陈列信息",
-        '  调用：[执行动作:安装本机游戏({"title":"五子棋","gameHtml":"<!doctype html>…"})]',
+        "    · fromDraft (可选) — true=从同标题草稿读取全部内容安装（大游戏先分段存草稿再用它）",
+        '  调用：[执行动作:安装本机游戏({"title":"五子棋","gameHtml":"<!doctype html>…"})] 或 [执行动作:安装本机游戏({"title":"五子棋","fromDraft":true})]',
     ],
     async run(args, context) {
         const title = text(args.title, 80);
-        const gameHtml = typeof args.gameHtml === "string" ? args.gameHtml : "";
         if (!title) return "缺少 title（游戏名）。";
-        if (!gameHtml.trim()) return "缺少 gameHtml（游戏单文件 HTML）。";
-        const roleSlots = normalizeRoleSlots(args.roleSlots);
-        const pickerHtml = typeof args.pickerHtml === "string" ? args.pickerHtml.trim() : "";
+        // fromDraft：从同标题草稿取内容（大游戏分段存草稿后安装，不必重新传大字段）
+        let sourceDraft: GameTemplateDraft | null = null;
+        if (args.fromDraft === true) {
+            const found = loadGameDrafts().find((item) => norm(item.title) === norm(title));
+            if (!found) return `草稿箱里没有「${title}」。先用「保存游戏草稿」写入（大游戏可分段追加），再 fromDraft 安装。`;
+            sourceDraft = found.draft;
+        }
+        const gameHtml = sourceDraft ? sourceDraft.gameHtml : typeof args.gameHtml === "string" ? args.gameHtml : "";
+        if (!gameHtml.trim()) return "缺少 gameHtml（游戏单文件 HTML）。大游戏可先分段「保存游戏草稿」再 fromDraft=true 安装。";
+        const roleSlots = sourceDraft ? parseGameRoleSlots(sourceDraft.roleSlotsText) : normalizeRoleSlots(args.roleSlots);
+        const pickerHtml = sourceDraft ? sourceDraft.pickerHtml.trim() : typeof args.pickerHtml === "string" ? args.pickerHtml.trim() : "";
         if (roleSlots.length > 0 && !pickerHtml) return "启用 roleSlots 时必须提供 pickerHtml（角色选择界面）。";
 
         const slug = stableSlug(title);
@@ -310,9 +479,9 @@ const installGameTool: QaContentTool = {
             id: `qa_game_${slug}`,
             title,
             codeName: `QA-${slug.toUpperCase()}`,
-            subtitle: text(args.subtitle, 160),
-            synopsis: text(args.synopsis, 600),
-            playNote: text(args.playNote, 3000),
+            subtitle: sourceDraft ? text(sourceDraft.subtitle, 160) : text(args.subtitle, 160),
+            synopsis: sourceDraft ? text(sourceDraft.synopsis, 600) : text(args.synopsis, 600),
+            playNote: sourceDraft ? text(sourceDraft.playNote, 3000) : text(args.playNote, 3000),
             coverImage: "",
             tags: normalizeStringArray(args.tags, 8, 24),
             authorId: "qa_workshop",
@@ -357,8 +526,9 @@ const installTheaterTool: QaContentTool = {
             tags: { type: "array", items: { type: "string" } },
             rarity: { type: "string", enum: ["common", "rare", "legend", "encrypted"] },
             glyph: { type: "string" }, durationTurns: { type: "number", description: "回合数上限 1-30，默认 8" },
+            fromDraft: { type: "boolean", description: "true=从同标题草稿读取内容上架（分段写完超长开场后用，不必重新传大字段）" },
         },
-        required: ["title", "aiInstruction", "openingHtml"],
+        required: ["title"],
     },
     description:
         "把写好的黑市剧场（夜间档案）上架到 黑市剧场 → 工作室 → 本机测试（不发布市场、不扣钱）。同标题重复上架会更新同一条目。写之前先读「创作指南」type=theater。",
@@ -369,13 +539,23 @@ const installTheaterTool: QaContentTool = {
         "    · openingHtml (必填) — 开场画面 HTML",
         "    · outputContract / renderRules / renderCss / memorySummaryPrompt (可选) — 输出与渲染控制",
         "    · subtitle / synopsis / storyText / tags / rarity / glyph / durationTurns (可选) — 陈列与回合数",
-        '  调用：[执行动作:上架本机剧场({"title":"雨夜档案","aiInstruction":"…","openingHtml":"<div>…</div>"})]',
+        "    · fromDraft (可选) — true=从同标题草稿读取内容上架（大字段先分段存草稿再用它）",
+        '  调用：[执行动作:上架本机剧场({"title":"雨夜档案","aiInstruction":"…","openingHtml":"<div>…</div>"})] 或 [执行动作:上架本机剧场({"title":"雨夜档案","fromDraft":true})]',
     ],
     async run(args, context) {
         const title = text(args.title, 80);
-        const aiInstruction = typeof args.aiInstruction === "string" ? args.aiInstruction.trim() : "";
-        const openingHtml = typeof args.openingHtml === "string" ? args.openingHtml.trim() : "";
         if (!title) return "缺少 title（档案名）。";
+        // fromDraft：从同标题草稿取内容（超长字段分段存草稿后上架）
+        let theaterDraft: Record<string, unknown> | null = null;
+        if (args.fromDraft === true) {
+            const found = loadBmDrafts().find((item) => norm(item.title) === norm(title));
+            if (!found) return `剧场草稿箱里没有「${title}」。先用「保存剧场草稿」写入（大字段可分段追加），再 fromDraft 上架。`;
+            theaterDraft = found.draft as unknown as Record<string, unknown>;
+        }
+        const pick = (key: string, arg: unknown): string =>
+            typeof arg === "string" && arg.trim() ? arg.trim() : theaterDraft ? String(theaterDraft[key] ?? "").trim() : "";
+        const aiInstruction = pick("aiInstruction", args.aiInstruction);
+        const openingHtml = pick("openingHtml", args.openingHtml);
         if (!aiInstruction) return "缺少 aiInstruction（演出指令）。";
         if (!openingHtml) return "缺少 openingHtml（开场画面）。";
 
@@ -387,9 +567,9 @@ const installTheaterTool: QaContentTool = {
             id: `qa_theater_${slug}`,
             title,
             codeName: `QA-${slug.toUpperCase()}`,
-            subtitle: text(args.subtitle, 160),
-            synopsis: text(args.synopsis, 600),
-            storyText: text(args.storyText, 2000),
+            subtitle: text(args.subtitle, 160) || pick("subtitle", ""),
+            synopsis: text(args.synopsis, 600) || pick("synopsis", ""),
+            storyText: text(args.storyText, 2000) || pick("storyText", ""),
             tags: normalizeStringArray(args.tags, 8, 24),
             rarity,
             glyph: text(args.glyph, 8) || "◆",
@@ -402,10 +582,16 @@ const installTheaterTool: QaContentTool = {
             allowExternalControl: false,
             openingHtml,
             aiInstruction,
-            outputContract: text(args.outputContract, 12000),
-            renderRules: Array.isArray(args.renderRules) ? (args.renderRules as BlackMarketTheaterTemplate["renderRules"]) : [],
-            renderCss: text(args.renderCss, 20000),
-            memorySummaryPrompt: text(args.memorySummaryPrompt, 12000),
+            outputContract: text(args.outputContract, 12000) || pick("outputContract", "").slice(0, 12000),
+            renderRules: Array.isArray(args.renderRules)
+                ? (args.renderRules as BlackMarketTheaterTemplate["renderRules"])
+                : theaterDraft
+                    ? ((): BlackMarketTheaterTemplate["renderRules"] => {
+                        try { const r = JSON.parse(String(theaterDraft.renderRulesText ?? "[]")); return Array.isArray(r) ? r : []; } catch { return []; }
+                    })()
+                    : [],
+            renderCss: text(args.renderCss, 20000) || pick("renderCss", "").slice(0, 20000),
+            memorySummaryPrompt: text(args.memorySummaryPrompt, 12000) || pick("memorySummaryPrompt", "").slice(0, 12000),
             purchaseCount: 0,
             rating: 0,
             createdAt: now,
@@ -592,7 +778,8 @@ const saveGameDraftTool: QaContentTool = {
         type: "object",
         properties: {
             title: { type: "string", description: "草稿标题（匹配现有草稿则更新，否则新建）" },
-            gameHtml: { type: "string", description: "游戏正体单文件 HTML（新建时必填）" },
+            gameHtml: { type: "string", description: "游戏正体单文件 HTML（新建时必填；整体覆盖）" },
+            gameHtmlAppend: { type: "string", description: "追加到草稿现有 gameHtml 末尾（大游戏分多轮写，绕开单次输出上限）" },
             roleSlots: { type: "array", description: "角色槽位；传 [] 表示无角色游戏", items: { type: "object", properties: { id: { type: "string" }, label: { type: "string" }, description: { type: "string" }, required: { type: "boolean" }, min: { type: "number" }, max: { type: "number" } } } },
             pickerHtml: { type: "string", description: "角色选择界面 HTML" },
             subtitle: { type: "string" }, synopsis: { type: "string" }, playNote: { type: "string" },
@@ -605,7 +792,8 @@ const saveGameDraftTool: QaContentTool = {
     schemaLines: [
         "  参数：",
         "    · title (必填) — 草稿标题（匹配现有草稿则更新，否则新建）",
-        "    · gameHtml (新建时必填) — 游戏正体单文件 HTML",
+        "    · gameHtml (新建时必填) — 游戏正体单文件 HTML（整体覆盖）",
+        "    · gameHtmlAppend (可选) — 追加到现有 gameHtml 末尾：大游戏第一轮用 gameHtml 写骨架，后续轮用它分段续写",
         "    · roleSlots / pickerHtml / subtitle / synopsis / playNote / tags (可选) — 只传要改的字段",
         '  调用：[执行动作:保存游戏草稿({"title":"五子棋","synopsis":"新简介"})]',
     ],
@@ -614,8 +802,11 @@ const saveGameDraftTool: QaContentTool = {
         if (!title) return "缺少 title（草稿标题）。";
         const drafts = loadGameDrafts();
         const existing = drafts.find((item) => norm(item.title) === norm(title));
-        const gameHtml = typeof args.gameHtml === "string" && args.gameHtml.trim() ? args.gameHtml : existing?.draft.gameHtml ?? "";
+        const appendHtml = typeof args.gameHtmlAppend === "string" ? args.gameHtmlAppend : "";
+        let gameHtml = typeof args.gameHtml === "string" && args.gameHtml.trim() ? args.gameHtml : existing?.draft.gameHtml ?? "";
+        if (appendHtml) gameHtml = (gameHtml || "") + appendHtml;
         if (!gameHtml.trim()) return `草稿箱里没有「${title}」，新建草稿必须提供 gameHtml。`;
+        if (gameHtml.length > 2_000_000) return "gameHtml 超过 2MB 上限。";
 
         const base: GameTemplateDraft = existing?.draft ?? {
             title, codeName: "QA", subtitle: "", synopsis: "", playNote: "", coverImage: "",
@@ -648,7 +839,8 @@ const saveGameDraftTool: QaContentTool = {
         const linked = existing?.publishedTemplateId
             ? "该草稿关联了已发布条目，卡片会显示「有未发布改动」，用户在草稿编辑器点「更新发布」即可同步到共享大厅。"
             : "用户可在草稿编辑器里点「本机测试」试玩或「发布共享」上架。";
-        return `✓ 已${existing ? "更新" : "新建"}游戏草稿「${title}」（游戏大厅 → 创作工坊 → 草稿箱）。${linked}`;
+        const appendNote = appendHtml ? `本次追加 ${appendHtml.length.toLocaleString()} 字符，gameHtml 当前共 ${gameHtml.length.toLocaleString()} 字符。写完后可用「安装本机游戏」fromDraft 上架试玩。` : "";
+        return `✓ 已${existing ? "更新" : "新建"}游戏草稿「${title}」（游戏大厅 → 创作工坊 → 草稿箱）。${appendNote}${linked}`;
     },
 };
 
@@ -662,7 +854,8 @@ const saveTheaterDraftTool: QaContentTool = {
         properties: {
             title: { type: "string", description: "档案名（匹配现有草稿则更新，否则新建）" },
             aiInstruction: { type: "string", description: "给 AI 的完整演出指令（新建时必填）" },
-            openingHtml: { type: "string", description: "开场画面 HTML（新建时必填）" },
+            openingHtml: { type: "string", description: "开场画面 HTML（新建时必填；整体覆盖）" },
+            openingHtmlAppend: { type: "string", description: "追加到草稿现有 openingHtml 末尾（超长开场分多轮写）" },
             outputContract: { type: "string" },
             renderRules: { type: "array", items: { type: "object", properties: { pattern: { type: "string" }, flags: { type: "string" }, className: { type: "string" }, template: { type: "string" } } } },
             renderCss: { type: "string" }, memorySummaryPrompt: { type: "string" },
@@ -677,6 +870,7 @@ const saveTheaterDraftTool: QaContentTool = {
         "  参数：",
         "    · title (必填) — 档案名（匹配现有草稿则更新，否则新建）",
         "    · aiInstruction / openingHtml (新建时必填) — 演出指令 / 开场画面",
+        "    · openingHtmlAppend (可选) — 追加到现有 openingHtml 末尾（超长开场分多轮写）",
         "    · outputContract / renderRules / renderCss / memorySummaryPrompt / subtitle / synopsis / storyText / tags (可选) — 只传要改的字段",
         '  调用：[执行动作:保存剧场草稿({"title":"雨夜档案","synopsis":"新简介"})]',
     ],
@@ -691,7 +885,10 @@ const saveTheaterDraftTool: QaContentTool = {
             aiInstruction: "", outputContract: "", renderRulesText: "[]", renderCss: "", memorySummaryPrompt: "",
         };
         const aiInstruction = typeof args.aiInstruction === "string" && args.aiInstruction.trim() ? args.aiInstruction : String(base.aiInstruction ?? "");
-        const openingHtml = typeof args.openingHtml === "string" && args.openingHtml.trim() ? args.openingHtml : String(base.openingHtml ?? "");
+        const openingAppend = typeof args.openingHtmlAppend === "string" ? args.openingHtmlAppend : "";
+        let openingHtml = typeof args.openingHtml === "string" && args.openingHtml.trim() ? args.openingHtml : String(base.openingHtml ?? "");
+        if (openingAppend) openingHtml = (openingHtml || "") + openingAppend;
+        if (openingHtml.length > 2_000_000) return "openingHtml 超过 2MB 上限。";
         if (!aiInstruction.trim() || !openingHtml.trim()) {
             return `草稿箱里没有「${title}」，新建草稿必须同时提供 aiInstruction 和 openingHtml。`;
         }
@@ -757,13 +954,72 @@ const listContentTool: QaContentTool = {
     },
 };
 
+// ── 导出文件（分享给别人）──
+
+const exportContentTool: QaContentTool = {
+    name: "导出文件",
+    nativeName: "export_local_content",
+    parameters: {
+        type: "object",
+        properties: {
+            type: { type: "string", enum: ["app", "game", "theater"], description: "内容类型" },
+            name: { type: "string", description: "APP 名 / 游戏草稿标题 / 剧场草稿标题" },
+        },
+        required: ["type", "name"],
+    },
+    description:
+        "把一条本机内容导出为文件下载（blob 下载，不刷新页面），用户可发给别人导入：APP 导出市场同款 zip 安装包（对方从应用市场上传导入）；游戏/剧场导出草稿 JSON（对方从草稿箱「从文件导入」）。游戏/剧场只支持草稿——本机测试内容先用对应的存草稿工具转成草稿再导出。",
+    schemaLines: [
+        "  参数：",
+        "    · type (必填) — app / game / theater",
+        "    · name (必填) — APP 名 / 游戏草稿标题 / 剧场草稿标题",
+        '  调用：[执行动作:导出文件({"type":"app","name":"番茄钟"})]',
+    ],
+    async run(args) {
+        const type = text(args.type, 20);
+        const name = text(args.name, 80);
+        if (!name) return "缺少 name。先用「本机内容清单」看看本机有什么。";
+        try {
+            if (type === "app") {
+                const app = loadInstalledCustomApps().find((item) => norm(item.name) === norm(name));
+                if (!app) return `没找到名为「${name}」的本机 APP。用「本机内容清单」核对名称。`;
+                const file = await createCustomAppPackageFile(app);
+                await downloadFile(file, file.name);
+                return `已导出「${app.name}」安装包（${file.name}）。对方在 应用市场 → 发布 → 上传安装包 即可导入。`;
+            }
+            if (type === "game") {
+                const draft = loadGameDrafts().find((item) => norm(item.title) === norm(name));
+                if (!draft) return `游戏草稿箱里没有「${name}」。如果它在本机测试里，先用「保存游戏草稿」转成草稿再导出。`;
+                const payload = { type: "ai-phone-game-draft", version: 1, title: draft.title, draft: draft.draft };
+                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+                await downloadFile(blob, `${draft.title.trim() || "游戏草稿"}.json`);
+                return `已导出游戏草稿「${draft.title}」。对方在 游戏大厅 → 创作工坊 → 创建页 →「上传 HTML / 草稿」选择该文件即可导入。`;
+            }
+            if (type === "theater") {
+                const draft = loadBmDrafts().find((item) => norm(item.title) === norm(name));
+                if (!draft) return `剧场草稿箱里没有「${name}」。如果它在本机测试里，先用「保存剧场草稿」转成草稿再导出。`;
+                const payload = { type: "ai-phone-theater-draft", version: 1, title: draft.title, draft: draft.draft };
+                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+                await downloadFile(blob, `${draft.title.trim() || "剧场草稿"}.json`);
+                return `已导出剧场草稿「${draft.title}」。对方在 黑市 → 工作室 → 创建发布 →「导入草稿文件」选择该文件即可导入。`;
+            }
+            return "type 需为 app / game / theater 之一。";
+        } catch (error) {
+            return `导出失败：${error instanceof Error ? error.message : String(error)}`;
+        }
+    },
+};
+
 export const QA_CONTENT_TOOLS = [
     contentGuideTool,
     listContentTool,
     readContentTool,
     installAppTool,
+    stageAppFileTool,
+    installStagedAppTool,
     installGameTool,
     installTheaterTool,
     saveGameDraftTool,
     saveTheaterDraftTool,
+    exportContentTool,
 ];

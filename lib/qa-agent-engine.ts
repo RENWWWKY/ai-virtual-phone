@@ -13,6 +13,7 @@ import type { LLMContentPart } from "./llm-prompt-assembler";
 import { loadApiConfigs, loadBindingConfig } from "./settings-storage";
 import type { ApiConfig } from "./settings-types";
 import { buildQaSystemPrompt } from "./qa-knowledge";
+import { createSseJsonParser } from "./sse-json";
 import { getQaMaxRounds } from "./qa-prefs";
 import { parseToolCalls } from "./tool-executor";
 import {
@@ -129,29 +130,23 @@ async function streamQaProviderRequest(
         const decoder = new TextDecoder();
         let buffer = "";
 
+        // 容错解析：中转把长 JSON 行切开时做碎片重组，不再静默丢增量（见 sse-json.ts）
+        const sseParser = createSseJsonParser();
+        const handleParsed = async (parsed: unknown) => {
+            const delta = parseProviderStreamDelta(request.providerKind, parsed);
+            if (delta.reasoning) {
+                reasoning += delta.reasoning;
+                await callbacks?.onReasoningDelta?.(delta.reasoning);
+            }
+            if (delta.content) {
+                content += delta.content;
+                const visibleDelta = stripHallucinatedTimestamps(delta.content);
+                if (visibleDelta) await callbacks?.onDelta?.(visibleDelta);
+            }
+        };
         const handleEvent = async (eventText: string) => {
-            const dataLines = eventText
-                .split("\n")
-                .map((line) => line.trim())
-                .filter((line) => line.startsWith("data:"))
-                .map((line) => line.slice(5).trim());
-            for (const dataLine of dataLines) {
-                if (!dataLine || dataLine === "[DONE]") continue;
-                try {
-                    const parsed = JSON.parse(dataLine) as unknown;
-                    const delta = parseProviderStreamDelta(request.providerKind, parsed);
-                    if (delta.reasoning) {
-                        reasoning += delta.reasoning;
-                        await callbacks?.onReasoningDelta?.(delta.reasoning);
-                    }
-                    if (delta.content) {
-                        content += delta.content;
-                        const visibleDelta = stripHallucinatedTimestamps(delta.content);
-                        if (visibleDelta) await callbacks?.onDelta?.(visibleDelta);
-                    }
-                } catch {
-                    // Ignore relay keepalive / non-JSON chunks.
-                }
+            for (const parsed of sseParser.pushEvent(eventText)) {
+                await handleParsed(parsed);
             }
         };
 
@@ -168,6 +163,9 @@ async function streamQaProviderRequest(
         }
         buffer += decoder.decode();
         if (buffer.trim()) await handleEvent(buffer);
+        for (const parsed of sseParser.flush()) {
+            await handleParsed(parsed);
+        }
 
         return { content: stripHallucinatedTimestamps(content), reasoning };
     } catch (error) {
@@ -380,7 +378,7 @@ export type QaAgentCallbacks = {
 // 轮数用尽/输出截断时给用户的可见提示——否则未执行的指令被流过滤器隐藏，
 // 表现为"话说到一半突然断了"
 const QA_ROUNDS_EXHAUSTED_NOTICE = "\n\n（这轮的工具调用次数用完了，还有操作没执行——回复「继续」我会接着完成。）";
-const QA_TRUNCATED_NOTICE = "\n\n（回复被模型的输出长度上限截断，最后一个操作没能完整生成——回复「继续」我会重试；经常出现的话，建议在预设里调大最大输出 token。）";
+const QA_TRUNCATED_NOTICE = "\n\n（回复被模型的输出长度上限截断，最后一个操作没能完整生成——回复「继续」我会重试；经常出现的话，建议在预设里调大最大输出 token，或让我改用分段写入——大 APP 走暂存、大游戏走草稿追加。）";
 
 /** 正文末尾残留未闭合的 [执行动作: 指令：输出被 max_tokens 截断的典型特征 */
 function hasTruncatedDirective(content: string): boolean {
@@ -675,6 +673,12 @@ async function callQaAgentNative(apiConfig: ApiConfig, history: QaEngineMessage[
         // 原生调用为主；同时兜底解析正文里的文本协议指令（弱模型混写时也能执行）
         const nativeCalls = result.toolCalls || [];
         const textParsed = parseToolCalls(stripThinkBlocks(result.content || ""));
+        // 原生调用参数被输出上限截断（残缺 JSON 已在下层丢弃）：按截断处理，提示重试/分段
+        if (nativeCalls.length === 0 && textParsed.toolCalls.length === 0 && result.truncatedToolCalls?.length) {
+            await callbacks?.onDelta?.(QA_TRUNCATED_NOTICE);
+            options?.onContext?.({ role: "assistant", content: stripThinkBlocks(result.content || "") + QA_TRUNCATED_NOTICE });
+            return;
+        }
         if (nativeCalls.length === 0 && textParsed.toolCalls.length === 0) {
             if (hasTruncatedDirective(result.content || "")) {
                 await callbacks?.onDelta?.(QA_TRUNCATED_NOTICE);
