@@ -22,6 +22,7 @@ import {
 } from "@/lib/resource-hub-client";
 import {
     IMPORT_DESTINATIONS,
+    stripAssetImageMark,
     type ImportDestination,
     type ResourceHubSource,
     type ShareIndex,
@@ -64,6 +65,9 @@ import { RichEditor, type RichEditorHandle } from "@/components/resource-hub/ric
 import { PixelHourglass } from "@/components/pixel-hourglass";
 
 type LoadState = "loading" | "ready" | "error";
+
+/** 富文本编辑器的四个落点：上传弹窗和编辑弹窗各有标题与说明 */
+type RichField = "uploadTitle" | "uploadDesc" | "editTitle" | "editDesc";
 
 function formatFileSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -175,9 +179,11 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
     } | null>(null);
     const [entryBusy, setEntryBusy] = useState(false);
     const [uploadCfg, setUploadCfg] = useState<ResourceHubUploadConfig>(() => loadUploadConfig());
-    // 所见即所得编辑器：贴纸选择器（标题/正文两处）、颜色面板
-    const [stickerPickerFor, setStickerPickerFor] = useState<"title" | "desc" | null>(null);
-    const [showColorPicker, setShowColorPicker] = useState(false);
+    // 所见即所得编辑器：贴纸/颜色面板都记着"当前作用于哪个输入框"。
+    // 上传和编辑两个弹窗各有标题+说明两处，共四个目标，面板必须认得出是谁开的，
+    // 否则在编辑弹窗里点贴纸会插进上传弹窗的编辑器。
+    const [stickerPickerFor, setStickerPickerFor] = useState<RichField | null>(null);
+    const [colorPickerFor, setColorPickerFor] = useState<RichField | null>(null);
     const uploadNameRef = useRef<RichEditorHandle | null>(null);
     const uploadDescRef = useRef<RichEditorHandle | null>(null);
 
@@ -200,10 +206,23 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
         window.setTimeout(() => setToast(current => (current === msg ? null : current)), 2600);
     }, []);
 
+    const editorRefFor = useCallback((field: RichField) => (
+        field === "uploadTitle" ? uploadNameRef
+            : field === "uploadDesc" ? uploadDescRef
+                : field === "editTitle" ? editTitleRef
+                    : editDescRef
+    ), []);
+
     // 颜色/字号/加粗都是"选中文字再操作"：没选中就提示
-    const wrapDescTag = useCallback((tag: string) => {
-        if (!uploadDescRef.current?.applyTag(tag)) showToast("先选中要排版的文字，再点按钮");
-    }, [showToast]);
+    const wrapTag = useCallback((tag: string, field: RichField) => {
+        if (!editorRefFor(field).current?.applyTag(tag)) showToast("先选中要排版的文字，再点按钮");
+    }, [editorRefFor, showToast]);
+
+    // 换弹窗时把面板收掉，免得残留的目标指向另一个弹窗里的编辑器
+    const closeRichPickers = useCallback(() => {
+        setStickerPickerFor(null);
+        setColorPickerFor(null);
+    }, []);
 
     // 工具栏按钮按下时不抢走编辑器焦点，选区才能保住（iOS 上尤其关键）
     const keepSelection = useCallback((e: React.PointerEvent) => e.preventDefault(), []);
@@ -420,6 +439,7 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
     const openEdit = useCallback((entry: ShareIndexEntry) => {
         const record = myRecordFor(entry.path);
         if (!record) { showToast("只有发布者本人可以编辑"); return; }
+        closeRichPickers();
         setEditRecord(record);
         setEditEntry(entry);
         setEditTitle(entry.name);
@@ -427,7 +447,7 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
         setEditAuthor(entry.author?.trim() || profile.nickname);
         setEditAddFiles([]);
         setEditRemoved([]);
-    }, [myRecordFor, profile.nickname, showToast]);
+    }, [closeRichPickers, myRecordFor, profile.nickname, showToast]);
 
     const handleSaveEdit = useCallback(async () => {
         if (!editEntry || !editRecord) return;
@@ -459,6 +479,7 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
                 : current);
             setActiveEntry(current => (current?.path === updated.path ? updated : current));
             setEditEntry(null);
+            closeRichPickers();
             setEditRecord(null);
             onNotice?.("已保存，索引刷新后所有人都能看到新内容");
         } catch (err) {
@@ -510,10 +531,16 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
         const folder = (uploadFolder === CUSTOM_FOLDER ? uploadFolderCustom : uploadFolder).trim();
         const name = uploadName.trim();
         if (!folder || !name) { onNotice?.("请填写分类和资源名称"); return; }
-        if (uploadFiles.length === 0) { onNotice?.("请选择至少一个资源文件"); return; }
+        // 文件不再是必须的：资源文件、配图都可以没有，纯说明文字也能发帖。
+        // 只有分类和名称仍然必填（它们决定资源在仓库里的落点）。
         setUploading(true);
         try {
-            const files = await Promise.all([...uploadFiles, ...uploadImages].map(fileToUploadEntry));
+            // 「选择资源文件」里的图片要标成资源本体（PNG 角色卡、表情包），
+            // 否则索引会按扩展名把它当配图，详情页里就只能看不能下载了。
+            const files = await Promise.all([
+                ...uploadFiles.map(file => fileToUploadEntry(file, { asset: true })),
+                ...uploadImages.map(file => fileToUploadEntry(file)),
+            ]);
             const result = await uploadResource(source, {
                 folder, name,
                 author: uploadAuthor.trim() || profile.nickname,
@@ -523,6 +550,7 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
                 avatarBase64: avatarBase64(profile.avatarDataUrl) || undefined,
             });
             setShowUpload(false);
+            closeRichPickers();
             uploadNameRef.current?.setMarkup(""); uploadDescRef.current?.setMarkup("");
             setUploadFiles([]); setUploadImages([]); setUploadFolderCustom("");
             onNotice?.(result.merged
@@ -535,12 +563,12 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
         }
     }, [onNotice, profile, source, uploadAuthor, uploadDesc, uploadFiles, uploadFolder, uploadFolderCustom, uploadImages, uploadName]);
 
-    // 贴纸/颜色选择面板（上传弹窗的排版工具栏用）
-    const stickerPanel = (
+    // 贴纸/颜色面板 + 排版工具栏：上传弹窗和编辑弹窗共用，靠 field 决定写进哪个编辑器
+    const renderStickerPanel = (field: RichField) => (
         <div className="rh-sticker-panel">
             {STICKER_NAMES.map(name => (
                 <button key={name} type="button" className="rh-sticker-btn" title={name} onPointerDown={keepSelection} onClick={() => {
-                    (stickerPickerFor === "title" ? uploadNameRef : uploadDescRef).current?.insertSticker(name);
+                    editorRefFor(field).current?.insertSticker(name);
                     setStickerPickerFor(null);
                 }}>
                     <StickerPixelIcon name={name} size={24} />
@@ -548,13 +576,34 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
             ))}
         </div>
     );
-    const colorPanel = (
+    const renderColorPanel = (field: RichField) => (
         <div className="rh-color-panel">
             {Object.entries(RICH_COLORS).map(([name, hex]) => (
                 <button key={name} type="button" className="rh-color-chip" style={{ background: hex }} title={name} onPointerDown={keepSelection}
-                    onClick={() => { wrapDescTag(name); setShowColorPicker(false); }} />
+                    onClick={() => { wrapTag(name, field); setColorPickerFor(null); }} />
             ))}
         </div>
+    );
+    /** 标题那种单行输入只给贴纸；说明是整条工具栏 */
+    const renderStickerButton = (field: RichField) => (
+        <button type="button" className="rh-fmt-btn" data-active={stickerPickerFor === field ? "1" : undefined} onPointerDown={keepSelection}
+            onClick={() => { setStickerPickerFor(current => current === field ? null : field); setColorPickerFor(null); }}>贴纸</button>
+    );
+    const renderFormatBar = (field: RichField) => (
+        <div className="rh-fmt-bar">
+            {renderStickerButton(field)}
+            <button type="button" className="rh-fmt-btn" data-active={colorPickerFor === field ? "1" : undefined} onPointerDown={keepSelection}
+                onClick={() => { setColorPickerFor(current => current === field ? null : field); setStickerPickerFor(null); }}>颜色</button>
+            <button type="button" className="rh-fmt-btn" onPointerDown={keepSelection} onClick={() => wrapTag("大", field)}>大</button>
+            <button type="button" className="rh-fmt-btn" onPointerDown={keepSelection} onClick={() => wrapTag("小", field)}>小</button>
+            <button type="button" className="rh-fmt-btn rh-fmt-bold" onPointerDown={keepSelection} onClick={() => wrapTag("粗", field)}>粗</button>
+        </div>
+    );
+    const renderRichPanels = (field: RichField) => (
+        <>
+            {stickerPickerFor === field && renderStickerPanel(field)}
+            {colorPickerFor === field && renderColorPanel(field)}
+        </>
     );
 
     const title = activeEntry ? activeEntry.name : activeFolder ? activeFolder : "资源集市";
@@ -866,7 +915,7 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
                                 <>
                                     <div className="rh-file-strip">
                                         {activeEntry.files.map(file => {
-                                            const base = file.split("/").pop() || file;
+                                            const base = stripAssetImageMark(file.split("/").pop() || file);
                                             const ext = fileExtension(base);
                                             return (
                                                 <button
@@ -940,7 +989,7 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
                             </span>
                         </div>
                         {/* 文件全名（文件条里显示不全，这里完整展示） */}
-                        <div className="rh-import-filename">{importFile.split("/").pop() || importFile}</div>
+                        <div className="rh-import-filename">{stripAssetImageMark(importFile.split("/").pop() || importFile)}</div>
                         <div className="rh-dialog-body rh-dest-grid">
                             {IMPORT_DESTINATIONS.map(dest => (
                                 <button key={dest.key} className="rh-dest-tile" title={dest.hint}
@@ -1061,26 +1110,32 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
 
             {/* 编辑已发布的资源（仅作者，凭本机凭证） */}
             {editEntry && (
-                <div className="rh-dialog-overlay" onClick={savingEdit ? undefined : () => setEditEntry(null)}>
+                <div className="rh-dialog-overlay" onClick={savingEdit ? undefined : () => { setEditEntry(null); closeRichPickers(); }}>
                     <div className="rh-dialog" onClick={e => e.stopPropagation()}>
                         <div className="rh-titlebar">
                             <span className="rh-titlebar-text">编辑资源</span>
                             <span className="rh-titlebar-controls">
-                                <button className="rh-tb-btn" disabled={savingEdit} onClick={() => setEditEntry(null)}>✕</button>
+                                <button className="rh-tb-btn" disabled={savingEdit} onClick={() => { setEditEntry(null); closeRichPickers(); }}>✕</button>
                             </span>
                         </div>
                         <div className="rh-dialog-body rh-form">
                             <div className="rh-form-field">
-                                <span>标题</span>
-                                <RichEditor ref={editTitleRef} className="rh-input rh-editor rh-editor-line"
-                                    placeholder="标题" ariaLabel="编辑标题" singleLine onChange={setEditTitle} />
+                                <span>标题（可加像素贴纸）</span>
+                                <div className="rh-input-row">
+                                    <RichEditor ref={editTitleRef} className="rh-input rh-editor rh-editor-line"
+                                        placeholder="标题" ariaLabel="编辑标题" singleLine onChange={setEditTitle} />
+                                    {renderStickerButton("editTitle")}
+                                </div>
+                                {renderRichPanels("editTitle")}
                             </div>
                             <label>投稿人
                                 <input className="rh-input" value={editAuthor} maxLength={24}
                                     onChange={e => setEditAuthor(e.target.value)} />
                             </label>
                             <div className="rh-form-field">
-                                <span>说明文字（选中文字可改颜色、字号、加粗）</span>
+                                <span>说明文字（选中文字后点按钮排版）</span>
+                                {renderFormatBar("editDesc")}
+                                {renderRichPanels("editDesc")}
                                 <RichEditor ref={editDescRef} className="rh-input rh-editor rh-editor-area"
                                     placeholder="写点介绍吧～" ariaLabel="编辑说明" onChange={setEditDesc} />
                             </div>
@@ -1088,7 +1143,7 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
                                 <span>现有文件（打叉即移除）</span>
                                 <div className="rh-edit-files">
                                     {[...editEntry.files, ...editEntry.images].map(file => {
-                                        const base = file.split("/").pop() || file;
+                                        const base = stripAssetImageMark(file.split("/").pop() || file);
                                         const removed = editRemoved.includes(file);
                                         return (
                                             <button key={file} className="rh-edit-file" data-removed={removed ? "1" : undefined}
@@ -1112,7 +1167,7 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
                             <div className="rh-form-hint">同名文件会被覆盖；保存后立即生效，索引刷新后所有人可见。</div>
                         </div>
                         <div className="rh-dialog-footer">
-                            <button className="rh-btn" disabled={savingEdit} onClick={() => setEditEntry(null)}>取消</button>
+                            <button className="rh-btn" disabled={savingEdit} onClick={() => { setEditEntry(null); closeRichPickers(); }}>取消</button>
                             <button className="rh-btn rh-btn-primary" disabled={savingEdit} onClick={() => void handleSaveEdit()}>
                                 {savingEdit ? <><PixelHourglass size={13} /> 保存中…</> : "保存"}
                             </button>
@@ -1123,12 +1178,12 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
 
             {/* 上传对话框 */}
             {showUpload && (
-                <div className="rh-dialog-overlay" onClick={uploading ? undefined : () => setShowUpload(false)}>
+                <div className="rh-dialog-overlay" onClick={uploading ? undefined : () => { setShowUpload(false); closeRichPickers(); }}>
                     <div className="rh-dialog" onClick={e => e.stopPropagation()}>
                         <div className="rh-titlebar">
                             <span className="rh-titlebar-text">上传资源</span>
                             <span className="rh-titlebar-controls">
-                                <button className="rh-tb-btn" disabled={uploading} onClick={() => setShowUpload(false)}>✕</button>
+                                <button className="rh-tb-btn" disabled={uploading} onClick={() => { setShowUpload(false); closeRichPickers(); }}>✕</button>
                             </span>
                         </div>
                         <div className="rh-dialog-body rh-form">
@@ -1155,27 +1210,17 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
                                         singleLine
                                         onChange={setUploadName}
                                     />
-                                    <button type="button" className="rh-fmt-btn" data-active={stickerPickerFor === "title" ? "1" : undefined} onPointerDown={keepSelection}
-                                        onClick={() => { setStickerPickerFor(current => current === "title" ? null : "title"); setShowColorPicker(false); }}>贴纸</button>
+                                    {renderStickerButton("uploadTitle")}
                                 </div>
-                                {stickerPickerFor === "title" && stickerPanel}
+                                {renderRichPanels("uploadTitle")}
                             </div>
                             <label>投稿人（可选）
                                 <input className="rh-input" value={uploadAuthor} onChange={e => setUploadAuthor(e.target.value)} />
                             </label>
                             <div className="rh-form-field">
                                 <span>说明文字（可选，会显示在列表里。选中文字后点按钮排版）</span>
-                                <div className="rh-fmt-bar">
-                                    <button type="button" className="rh-fmt-btn" data-active={stickerPickerFor === "desc" ? "1" : undefined} onPointerDown={keepSelection}
-                                        onClick={() => { setStickerPickerFor(current => current === "desc" ? null : "desc"); setShowColorPicker(false); }}>贴纸</button>
-                                    <button type="button" className="rh-fmt-btn" data-active={showColorPicker ? "1" : undefined} onPointerDown={keepSelection}
-                                        onClick={() => { setShowColorPicker(v => !v); setStickerPickerFor(null); }}>颜色</button>
-                                    <button type="button" className="rh-fmt-btn" onPointerDown={keepSelection} onClick={() => wrapDescTag("大")}>大</button>
-                                    <button type="button" className="rh-fmt-btn" onPointerDown={keepSelection} onClick={() => wrapDescTag("小")}>小</button>
-                                    <button type="button" className="rh-fmt-btn rh-fmt-bold" onPointerDown={keepSelection} onClick={() => wrapDescTag("粗")}>粗</button>
-                                </div>
-                                {stickerPickerFor === "desc" && stickerPanel}
-                                {showColorPicker && colorPanel}
+                                {renderFormatBar("uploadDesc")}
+                                {renderRichPanels("uploadDesc")}
                                 <RichEditor
                                     ref={uploadDescRef}
                                     className="rh-input rh-editor rh-editor-area"
@@ -1195,13 +1240,17 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
                             </label>
                             {renderPickedFiles(uploadImages, index => setUploadImages(current => current.filter((_, i) => i !== index)))}
                             <div className="rh-form-hint">
+                                「资源文件」是别人要下载/导入的东西，「配图」只在详情页展示。
+                                PNG 角色卡、表情包这类图片本身就是资源，要放进「资源文件」。
+                            </div>
+                            <div className="rh-form-hint">
                                 {uploadCfg.githubToken
                                     ? "将使用你的 GitHub Token 提交（有仓库权限则直接上架，否则生成待审核投稿）。"
                                     : "将匿名提交到审核队列，管理员通过后上架。单次总量 ≤5MB。"}
                             </div>
                         </div>
                         <div className="rh-dialog-footer">
-                            <button className="rh-btn" disabled={uploading} onClick={() => setShowUpload(false)}>取消</button>
+                            <button className="rh-btn" disabled={uploading} onClick={() => { setShowUpload(false); closeRichPickers(); }}>取消</button>
                             <button className="rh-btn rh-btn-primary" disabled={uploading} onClick={() => void handleUploadSubmit()}>
                                 {uploading ? <><PixelHourglass size={13} /> 提交中…</> : "提交"}
                             </button>
@@ -1228,6 +1277,7 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
                                 setUploadFolder(activeFolder || "");
                                 setUploadAuthor(profile.nickname);
                                 setShowUpload(true);
+                                closeRichPickers();
                             }}>确认</button>
                         </div>
                     </div>
