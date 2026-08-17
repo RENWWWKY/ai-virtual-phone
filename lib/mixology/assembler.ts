@@ -1,6 +1,9 @@
 // lib/mixology/assembler.ts
 // 独家特调 · 装配器：把一杯特调（角色卡 + 各槽材料）装配成提示词。
 //
+// 一格可以叠多件材料：累加型的格（基底/风味/杯型/苦精）把这一叠依次拼接，
+// 择一型的格（面具/小票/尾调）只用第一件。带条件的材料由调用方先筛过再交进来。
+//
 // 固定装配顺序（创作者不可调，保证"任意搭配都不散架"）：
 //   序言 → 基底 → 角色资料 → 世界与剧情 → 风味 → 杯型 → 状态栏契约 → 示例对话
 //   → [对话历史] → 苦精（离生成最近，权重最高）
@@ -9,11 +12,15 @@
 
 import type {
     MixCharacterCard,
+    MixEncoreMaterial,
     MixMaterial,
     MixMaterialKind,
+    MixPersonaMaterial,
+    MixState,
     MixTextMaterial,
     MixTicketMaterial,
 } from "./types";
+import { mixEncoreRenderHtml } from "./types";
 
 export const MIX_DEFAULT_USER_NAME = "你";
 
@@ -22,14 +29,23 @@ export const MIX_DEFAULT_USER_NAME = "你";
 export const MIX_TICKET_OPEN = "[状态栏]";
 export const MIX_TICKET_CLOSE = "[/状态栏]";
 
+/** 小剧场壳标记：尾调写了契约时，AI 的加演内容放进这对标签 */
+export const MIX_ENCORE_OPEN = "[小剧场]";
+export const MIX_ENCORE_CLOSE = "[/小剧场]";
+
 export type MixAssembleInput = {
     character: MixCharacterCard;
-    /** 其余槽位材料（酒柜实体，缺槽就不传） */
-    materials: Partial<Record<MixMaterialKind, MixMaterial>>;
+    /**
+     * 其余槽位材料：每格是一叠（已由调用方按生效条件筛过、按顺序排好）。
+     * 累加型的格（基底/风味/杯型/苦精）整叠依次拼接，择一型的格只看第一件。
+     */
+    materials: Partial<Record<MixMaterialKind, MixMaterial[]>>;
     /** 玩家代入名，空则用默认 */
     userName?: string;
     /** 选用的开场索引，越界时回退到 0 */
     openingIndex?: number;
+    /** 当前记住的值，供 {{状态.X}} 宏取用 */
+    state?: MixState;
 };
 
 export type MixAssembledPrompt = {
@@ -41,12 +57,35 @@ export type MixAssembledPrompt = {
     opening: string;
     /** 本局是否带小票（运行时据此决定是否剥取小票块） */
     hasTicket: boolean;
+    /** 本局尾调是否为 AI 小剧场（有契约且有渲染代码） */
+    hasEncore: boolean;
 };
 
-export function applyMixMacros(text: string, charName: string, userName: string): string {
-    return text
+export function applyMixMacros(
+    text: string,
+    charName: string,
+    userName: string,
+    state?: MixState,
+): string {
+    const replaced = text
         .replace(/\{\{\s*char\s*\}\}/gi, charName)
         .replace(/\{\{\s*user\s*\}\}/gi, userName);
+    // {{状态.好感度}}：取小票里勾了「记住」的值；没有这个值时整个宏留空，不留占位符
+    return replaced.replace(/\{\{\s*状态\s*[.．。]\s*([^}]+?)\s*\}\}/g, (_all, name: string) => {
+        const value = state?.[String(name).trim()];
+        return value === undefined ? "" : String(value);
+    });
+}
+
+/** 一叠材料的正文按顺序拼起来（累加型的格用） */
+function stackText(materials: MixMaterial[] | undefined): string {
+    return (materials ?? [])
+        .map((m) => {
+            const content = (m as MixTextMaterial).content;
+            return typeof content === "string" ? content.trim() : "";
+        })
+        .filter(Boolean)
+        .join("\n\n");
 }
 
 /** 有值则输出「标题：内容」段，空值返回 null（上层过滤） */
@@ -62,26 +101,56 @@ function sectionBlock(title: string, lines: (string | null)[]): string | null {
     return `## ${title}\n${kept.join("\n\n")}`;
 }
 
-function textOf(material: MixMaterial | undefined): string {
-    if (!material) return "";
-    const content = (material as MixTextMaterial).content;
-    return typeof content === "string" ? content.trim() : "";
-}
-
 const PREAMBLE = [
     "这是一场沉浸式角色扮演。下方依次给出扮演规则、角色资料与输出要求，请全部遵守；",
     "越靠后的要求优先级越高。",
 ].join("");
 
+// 正文标记协议是 App 的渲染协议，内置且常驻——放在段首、用户杯型内容之后接，
+// 不随材料缺失而消失（装饰 CSS 与正文渲染都依赖这四种标记）。
+const PROSE_PROTOCOL = [
+    "正文标记规则（界面按此渲染，务必遵守）：",
+    "- 说出口的话用「」包裹；未说出口的心声用 * * 包裹。",
+    "- 场景或时间切换时，单独一行用【】标出。",
+    "- 需要重读的词可用 ~ ~ 包裹。",
+    "- 除以上四种外，不要使用任何其他富文本标记（不用 Markdown 标题、粗体、列表）。",
+].join("\n");
+
 /** 状态栏契约段：把小票材料的 contract 包进固定壳指令 */
-function ticketSection(ticket: MixTicketMaterial, charName: string, userName: string): string | null {
+function ticketSection(ticket: MixTicketMaterial, charName: string, userName: string, state?: MixState): string | null {
     const contract = ticket.contract.trim();
     if (!contract) return null;
     return [
         "## 状态栏",
-        applyMixMacros(contract, charName, userName),
-        `每轮回复的最末尾，必须另起一行输出 ${MIX_TICKET_OPEN}，按上述要求逐行填写本轮的实际数据，再以 ${MIX_TICKET_CLOSE} 单独一行收束。任何一轮都不要省略这一段。`,
+        `输出格式：每轮回复的最开头，第一行输出 ${MIX_TICKET_OPEN}，随后按「输出内容」的要求逐行填写本轮的实际数据，以 ${MIX_TICKET_CLOSE} 单独一行收束，之后空一行再写正文。任何一轮都不要省略这一段。`,
+        "输出内容：",
+        applyMixMacros(contract, charName, userName, state),
     ].join("\n");
+}
+
+/** 小剧场契约段：格式说明在前，内容要求在后；契约留空则整段不存在 */
+function encoreSection(encore: MixEncoreMaterial, charName: string, userName: string, state?: MixState): string | null {
+    const contract = encore.contract?.trim();
+    if (!contract) return null;
+    return [
+        "## 小剧场",
+        `输出格式：放在回复最末尾（正文之后），整块用 ${MIX_ENCORE_OPEN}...${MIX_ENCORE_CLOSE} 包裹；是否输出由「输出内容」的条件决定，不输出时整段省略，不要输出空壳。`,
+        "输出内容：",
+        applyMixMacros(contract, charName, userName, state),
+    ].join("\n");
+}
+
+/** 收尾核对清单：放在最后压阵，防止模型写完正文忘了必须输出的块 */
+function checklistSection(withTicket: boolean, withEncore: boolean): string | null {
+    if (!withTicket && !withEncore) return null;
+    const items = ["- 正文符合「正文输出要求」。"];
+    if (withTicket) {
+        items.push(`- 回复最开头已按「状态栏」的格式输出 ${MIX_TICKET_OPEN}...${MIX_TICKET_CLOSE} 块——任何一轮都不能缺。`);
+    }
+    if (withEncore) {
+        items.push(`- 若本轮满足「小剧场」的输出条件，已用 ${MIX_ENCORE_OPEN}...${MIX_ENCORE_CLOSE} 块输出。`);
+    }
+    return ["## 输出格式检查", "每轮回复发出前逐项核对：", ...items].join("\n");
 }
 
 function exampleSection(card: MixCharacterCard, charName: string, userName: string): string | null {
@@ -96,16 +165,25 @@ function exampleSection(card: MixCharacterCard, charName: string, userName: stri
 export function assembleMixPrompt(input: MixAssembleInput): MixAssembledPrompt {
     const card = input.character;
     const charName = card.charName.trim() || card.name.trim() || "角色";
-    const userName = input.userName?.trim() || MIX_DEFAULT_USER_NAME;
     const m = input.materials;
-    const ticket = m.ticket?.kind === "ticket" ? (m.ticket as MixTicketMaterial) : undefined;
+    // 择一型的格：取这一叠里的第一件
+    const firstOf = <T extends MixMaterial>(kind: MixMaterialKind): T | undefined => {
+        const found = m[kind]?.find((item) => item.kind === kind);
+        return found as T | undefined;
+    };
+    const persona = firstOf<MixPersonaMaterial>("persona");
+    // 代入名：显式传入 > 面具材料的代入名 > 默认「你」
+    const userName = input.userName?.trim() || persona?.userName?.trim() || MIX_DEFAULT_USER_NAME;
+    const ticket = firstOf<MixTicketMaterial>("ticket");
+    const encore = firstOf<MixEncoreMaterial>("encore");
 
-    const apply = (text: string) => applyMixMacros(text, charName, userName);
+    const apply = (text: string) => applyMixMacros(text, charName, userName, input.state);
 
-    const baseText = textOf(m.base);
-    const flavorText = textOf(m.flavor);
-    const glassText = textOf(m.glass);
-    const strengthText = textOf(m.strength);
+    // 累加型的格：这一叠里条件满足的全部按顺序拼接
+    const baseText = stackText(m.base);
+    const flavorText = stackText(m.flavor);
+    const glassText = stackText(m.glass);
+    const strengthText = stackText(m.strength);
 
     const sections: (string | null)[] = [
         PREAMBLE,
@@ -117,6 +195,10 @@ export function assembleMixPrompt(input: MixAssembleInput): MixAssembledPrompt {
             field("外貌", card.appearance),
             field("背景", card.background),
         ].map((l) => (l ? apply(l) : l))),
+        // 用户资料：{{user}} 是谁。由面具材料提供，帮模型称呼与理解对面的人
+        persona && persona.content.trim()
+            ? `## 用户资料\n${userName}由用户扮演，${charName}对面的人。\n${apply(persona.content.trim())}`
+            : null,
         sectionBlock("世界与剧情", [
             field("世界观", card.worldview),
             field(`${charName}对${userName}的初始认知`, card.cognition),
@@ -125,9 +207,15 @@ export function assembleMixPrompt(input: MixAssembleInput): MixAssembledPrompt {
             field("附加设定", card.extra),
         ].map((l) => (l ? apply(l) : l))),
         flavorText ? `## 文风\n${apply(flavorText)}` : null,
-        glassText ? `## 输出格式\n${apply(glassText)}` : null,
-        ticket ? ticketSection(ticket, charName, userName) : null,
+        // 内置协议在前，用户的杯型内容接在后面
+        `## 正文输出要求\n${PROSE_PROTOCOL}${glassText ? `\n${apply(glassText)}` : ""}`,
+        ticket ? ticketSection(ticket, charName, userName, input.state) : null,
+        encore ? encoreSection(encore, charName, userName, input.state) : null,
         exampleSection(card, charName, userName),
+        checklistSection(
+            Boolean(ticket?.contract.trim()),
+            Boolean(encore?.contract?.trim()),
+        ),
     ];
 
     const openings = card.openings.filter((o) => o.trim());
@@ -143,5 +231,6 @@ export function assembleMixPrompt(input: MixAssembleInput): MixAssembledPrompt {
             : "",
         opening,
         hasTicket: Boolean(ticket?.contract.trim() && ticket?.renderHtml.trim()),
+        hasEncore: Boolean(encore?.contract?.trim() && encore && mixEncoreRenderHtml(encore).trim()),
     };
 }

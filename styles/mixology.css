@@ -150,6 +150,45 @@
 }
 
 /* ── TAG 胶囊行 ── */
+/* 固定 TAG 工具行：位于头部与滚动区之间、不在滚动容器内，橡皮筋回弹带不动它 */
+.mix-topbar {
+    flex: 0 0 auto;
+    padding: 0 14px 4px;
+    background: var(--mix-bg);
+    box-shadow: 0 6px 12px -8px rgba(0, 0, 0, 0.6);
+    position: relative;
+    z-index: 20;
+}
+
+/* 大厅 / 我的发布 滑动切换：头部刷新按钮左侧的小胶囊 */
+.mix-scope-toggle {
+    flex: 0 0 auto;
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.mix-scope-toggle button {
+    border: none;
+    background: none;
+    color: var(--mix-dim);
+    font-size: 11px;
+    line-height: 1;
+    padding: 5px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+}
+
+.mix-scope-toggle button[data-active="true"] {
+    background: rgba(141, 123, 245, 0.25);
+    color: var(--mix-violet);
+    font-weight: 600;
+}
+
 .mix-chip-row {
     display: flex;
     gap: 8px;
@@ -157,6 +196,7 @@
     padding: 12px 2px 4px;
     scrollbar-width: none;
 }
+
 
 .mix-chip-row::-webkit-scrollbar {
     display: none;
@@ -178,6 +218,211 @@
     background: rgba(141, 123, 245, 0.18);
     color: var(--mix-violet);
     font-weight: 600;
+}
+
+/* 双行 TAB：上行比喻名，下行小字标它在提示词里的正规段名 */
+.mix-chip[data-two-line="true"] {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    padding: 6px 13px 5px;
+    border-radius: 13px;
+    line-height: 1.3;
+}
+
+.mix-chip[data-two-line="true"] small {
+    font-size: 9px;
+    font-weight: 400;
+    color: var(--mix-faint);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+
+.mix-chip[data-two-line="true"][data-active="true"] small {
+    color: rgba(141, 123, 245, 0.75);
+}
+
+/* 头部刷新图标：拉取中旋转 */
+.mix-spin {
+    animation: mixSpin 0.9s linear infinite;
+}
+
+@keyframes mixSpin {
+    to { transform: rotate(360deg); }
+}
+
+/* 行内加载态：小转圈 + 文案（评论/详情等占位） */
+.mix-loading-inline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+/* ── 滤网编辑器：规则行 + 试跑结果 ── */
+.mix-filter-rule {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 8px;
+    border-radius: 12px;
+    background: var(--mix-panel);
+}
+
+.mix-filter-rule[data-bad="true"] {
+    outline: 1px solid rgba(226, 163, 163, 0.5);
+}
+
+.mix-filter-rule-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.mix-filter-mode {
+    flex: 0 0 auto;
+    align-self: center;
+    border: none;
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    background: rgba(141, 123, 245, 0.2);
+    color: var(--mix-violet);
+}
+
+.mix-filter-mode[data-mode="context"] {
+    background: rgba(217, 176, 106, 0.16);
+    color: var(--mix-gold);
+}
+
+.mix-filter-rule-bad {
+    font-size: 10.5px;
+    color: #e2a3a3;
+}
+
+.mix-filter-result {
+    margin-top: 8px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    font-size: 12.5px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--mix-dim);
+}
+
+/* ── 创作者资料：头部入口胶囊 + 头像 + 详情作者行 ── */
+.mix-profile-chip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 150px;
+    padding: 3px 10px 3px 3px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--mix-dim);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.mix-profile-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mix-avatar {
+    flex: 0 0 auto;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--mix-panel);
+}
+
+.mix-avatar-fallback {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: rgba(141, 123, 245, 0.25);
+    color: var(--mix-violet);
+    font-weight: 700;
+}
+
+.mix-author-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.mix-author-name {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--mix-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mix-author-row .mix-mat-stats {
+    margin-top: 0;
+}
+
+/* 云端关联徽章：已上架（紫）/ 有未上架修改（金），配方卡与材料详情标题共用 */
+.mix-cloud-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 7px 2px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.5;
+    vertical-align: 2px;
+    background: rgba(141, 123, 245, 0.18);
+    color: var(--mix-violet);
+    white-space: nowrap;
+}
+
+.mix-cloud-badge[data-dirty="true"] {
+    background: rgba(217, 176, 106, 0.16);
+    color: var(--mix-gold);
+}
+
+/* 右下角悬浮创建按钮：当前 TAB 是哪类就建哪类。
+   bottom 要整个越过底部导航（导航自身高度 + 安全区），否则会压在 TAB 栏上 */
+.mix-fab {
+    position: absolute;
+    right: 16px;
+    bottom: calc(92px + env(safe-area-inset-bottom, 0px));
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 52px;
+    height: 52px;
+    border: none;
+    border-radius: 50%;
+    background: var(--mix-violet);
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 6px 20px rgba(141, 123, 245, 0.45), 0 2px 6px rgba(0, 0, 0, 0.35);
+    transition: transform 0.15s;
+}
+
+.mix-fab:active {
+    transform: scale(0.92);
 }
 
 /* ── 双列瀑布（CSS columns） ── */
@@ -522,6 +767,10 @@
 }
 
 .mix-pill-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
     border: none;
     border-radius: 999px;
     padding: 7px 16px;
@@ -541,6 +790,44 @@
 .mix-pill-btn[data-tone="ghost"] {
     background: rgba(255, 255, 255, 0.06);
     color: var(--mix-dim);
+}
+
+/* ── 就地预览：按钮下方直接铺开，不弹窗 ── */
+.mix-preview-inline {
+    margin-top: 10px;
+}
+
+.mix-preview-inline > .mix-pill-btn[data-open="true"] {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+.mix-preview-inline .mix-preview-caret {
+    transition: transform 0.2s ease;
+}
+
+.mix-preview-inline > .mix-pill-btn[data-open="true"] .mix-preview-caret {
+    transform: rotate(180deg);
+}
+
+/* 四处预览按钮都在各自表单的最末尾，展开后不会把要填的字段顶走，
+   所以不给它套嵌套滚动区——直接让页面滚，手感才像"就地展开"而不是又一个小弹窗 */
+.mix-preview-panel {
+    margin-top: 8px;
+    padding: 12px;
+    border: 1px solid rgba(141, 123, 245, 0.22);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.025);
+    animation: mix-preview-in 0.22s ease both;
+}
+
+@keyframes mix-preview-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: none; }
+}
+
+.mix-preview-panel > *:first-child {
+    margin-top: 0;
 }
 
 /* ── 对局列表 ── */
@@ -891,6 +1178,65 @@
     margin: 14px 0;
 }
 
+/* 带操作行时纵向排：气泡在上、图标行贴在下 */
+.mix-user-turn[data-with-actions="true"] {
+    flex-direction: column;
+    align-items: flex-end;
+}
+
+/* ── 每条消息下方的操作行（复制/回溯/编辑）── */
+.mix-turn-actions {
+    display: flex;
+    gap: 16px;
+    margin: 5px 2px 2px;
+    opacity: 0.42;
+    transition: opacity 0.15s;
+}
+
+.mix-turn-actions:hover {
+    opacity: 0.8;
+}
+
+.mix-turn-actions[data-align="right"] {
+    justify-content: flex-end;
+}
+
+.mix-turn-act {
+    display: flex;
+    align-items: center;
+    padding: 3px;
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+}
+
+.mix-turn-act:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.mix-turn-act:active {
+    transform: scale(0.9);
+}
+
+/* AI 轮外层：只作分组，不改排版 */
+.mix-assistant-turn {
+    margin: 0 0 6px;
+}
+
+/* 消息就地编辑 */
+.mix-turn-edit {
+    margin: 10px 0;
+}
+
+.mix-turn-edit-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 8px;
+}
+
 .mix-user-bubble {
     max-width: 82%;
     padding: 10px 14px;
@@ -1064,6 +1410,17 @@
     border-bottom: 1px solid var(--mix-line);
 }
 
+/* 删除请求在途：整条压暗防止误触，按钮文字改「删除中…」 */
+.mix-comment[data-deleting="true"] {
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+/* 点赞请求在途：微暗示意，防连点 */
+.mix-like-btn[data-pending="true"] {
+    opacity: 0.5;
+}
+
 .mix-comment[data-depth="1"] {
     margin-left: 16px;
     border-bottom: none;
@@ -1087,6 +1444,9 @@
 }
 
 .mix-comment-op {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     border: none;
     background: none;
     color: var(--mix-faint);
@@ -1507,6 +1867,75 @@
     height: 104px;
 }
 
+/* 技法类视觉材料（小票/装饰/尾调）：同为海报卡，比角色卡矮一档 */
+.mix-mat-card[data-poster="true"]:not([data-kind="character"]) {
+    aspect-ratio: 3 / 3.8;
+}
+
+/* ── 纯文本材料（基底/风味/杯型/苦精）：不配图，单列横条 ── */
+.mix-mat-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 10px;
+}
+
+.mix-mat-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 14px;
+    border-radius: 14px;
+    background: var(--mix-panel);
+    cursor: pointer;
+    transition: transform 0.15s;
+}
+
+.mix-mat-row:active {
+    transform: scale(0.98);
+}
+
+.mix-mat-row-glyph {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    color: var(--mix-violet);
+    background: var(--mix-panel-2);
+}
+
+.mix-mat-row[data-kind="strength"] .mix-mat-row-glyph {
+    color: var(--mix-gold);
+}
+
+/* 对局内修改方案：角色卡槽锁定态（卡槽轮与横条两种形态都认） */
+.mix-mat-row[data-locked="true"],
+.mix-slot[data-locked="true"] {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.mix-mat-row[data-locked="true"]:active {
+    transform: none;
+}
+
+/* 消息编辑大弹窗的输入区 */
+.mix-edit-large {
+    min-height: 52vh;
+    margin-top: 10px;
+    font-size: 13px;
+    line-height: 1.8;
+}
+
+.mix-mat-row .mix-mat-info {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+}
+
 /* ── 确认弹窗 ── */
 .mix-confirm-mask {
     position: absolute;
@@ -1688,4 +2117,500 @@
     margin: 4px 0 18px;
     padding-bottom: 16px;
     border-bottom: 1px solid rgba(217, 176, 106, 0.22);
+}
+
+/* AI 小剧场：按轮渲染在状态栏之后 */
+.mix-encore-turn {
+    margin: 4px 0 16px;
+}
+
+/* ══════════════════════════════════════════
+   一格叠多件 + 生效条件
+   ══════════════════════════════════════════ */
+
+/* 槽位卡里的叠层预览：第二件起列出名字与条件 */
+.mix-slot-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    width: 100%;
+    padding: 0 4px;
+}
+
+.mix-slot-stack-item {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    font-size: 11px;
+    line-height: 1.3;
+    color: var(--mix-dim);
+    padding: 4px 8px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    text-align: left;
+}
+
+.mix-slot-stack-item i {
+    font-style: normal;
+    font-size: 10px;
+    color: var(--mix-faint);
+}
+
+/* 单件时的条件说明（不设条件就不显示这行） */
+.mix-slot-when {
+    font-size: 10px;
+    color: var(--mix-violet);
+    opacity: 0.8;
+}
+
+/* ── 槽位编辑弹层 ── */
+.mix-stack-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 12px 0;
+}
+
+.mix-stack-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: var(--mix-panel);
+}
+
+.mix-stack-order {
+    flex: 0 0 auto;
+    width: 20px;
+    text-align: center;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--mix-faint);
+}
+
+.mix-stack-glyph {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    color: var(--mix-violet);
+    background: var(--mix-panel-2);
+}
+
+.mix-stack-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.mix-stack-name {
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mix-stack-name[data-gone="true"] {
+    color: var(--mix-faint);
+    font-weight: 400;
+}
+
+/* 「什么时候出现」：点它进条件编辑 */
+.mix-stack-when {
+    align-self: flex-start;
+    border: none;
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    background: rgba(141, 123, 245, 0.16);
+    color: var(--mix-violet);
+}
+
+.mix-stack-ops {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.mix-stack-ops .mix-icon-btn:disabled {
+    opacity: 0.28;
+    cursor: default;
+}
+
+.mix-stack-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    padding: 12px;
+    border: 1px dashed var(--mix-line);
+    border-radius: 14px;
+    background: transparent;
+    color: var(--mix-violet);
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.mix-stack-add:disabled {
+    color: var(--mix-faint);
+    cursor: default;
+}
+
+/* ── 条件编辑 ── */
+.mix-cond-target {
+    font-size: 12px;
+    color: var(--mix-dim);
+    margin-bottom: 12px;
+}
+
+.mix-cond-opt {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px;
+    margin-bottom: 8px;
+    border-radius: 14px;
+    background: var(--mix-panel);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 2;
+}
+
+.mix-cond-opt[data-on="true"] {
+    background: rgba(141, 123, 245, 0.12);
+}
+
+.mix-cond-opt input[type="radio"] {
+    margin-top: 7px;
+    accent-color: var(--mix-violet);
+    flex: 0 0 auto;
+}
+
+.mix-cond-opt > span {
+    flex: 1;
+    min-width: 0;
+}
+
+/* 行内填空：数字窄、文本宽，都不跳行 */
+.mix-cond-num,
+.mix-cond-val,
+.mix-cond-text,
+.mix-cond-sel {
+    margin: 0 5px;
+    padding: 3px 8px;
+    border: 1px solid var(--mix-line);
+    border-radius: 8px;
+    background: var(--mix-panel-2);
+    color: inherit;
+    font-size: 12px;
+    font-family: inherit;
+}
+
+.mix-cond-num {
+    width: 52px;
+    text-align: center;
+}
+
+/* 变量比较的值：可能是数字也可能是文字（时段=深夜），比数字框宽一点 */
+.mix-cond-val {
+    width: 76px;
+    text-align: center;
+}
+
+.mix-cond-text {
+    width: 140px;
+    max-width: 100%;
+}
+
+.mix-cond-sel {
+    max-width: 110px;
+}
+
+.mix-cond-hint {
+    font-style: normal;
+    font-size: 11px;
+    color: var(--mix-faint);
+}
+
+/* ══════════════════════════════════════════
+   记住的值：小票里的声明 + 对局里的状态条
+   ══════════════════════════════════════════ */
+
+/* 编辑器：从契约里认出来的字段，点一下就记住 */
+.mix-var-suggest {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+    font-size: 11px;
+    color: var(--mix-faint);
+}
+
+.mix-var-chip {
+    border: 1px solid var(--mix-line);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    background: transparent;
+    color: var(--mix-dim);
+}
+
+.mix-var-chip[data-on="true"] {
+    border-color: transparent;
+    background: rgba(141, 123, 245, 0.2);
+    color: var(--mix-violet);
+}
+
+.mix-var-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.mix-var-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.mix-var-row .mix-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.mix-var-initial {
+    flex: 0 0 90px !important;
+}
+
+.mix-var-empty {
+    font-size: 11px;
+    color: var(--mix-faint);
+    margin-bottom: 10px;
+}
+
+/* 对局：顶栏下的状态条，没有任何值时整条不渲染 */
+.mix-state-bar {
+    flex: 0 0 auto;
+    position: relative;
+    z-index: 3;
+    padding: 0 12px 6px;
+}
+
+.mix-state-strip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 10px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.28);
+    backdrop-filter: blur(6px);
+    color: inherit;
+    font-family: inherit;
+    cursor: pointer;
+    overflow: hidden;
+}
+
+.mix-state-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    white-space: nowrap;
+    font-size: 11px;
+}
+
+.mix-state-chip i {
+    font-style: normal;
+    color: var(--mix-faint);
+}
+
+.mix-state-chip b {
+    color: var(--mix-gold);
+    font-variant-numeric: tabular-nums;
+}
+
+.mix-state-more {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--mix-faint);
+}
+
+.mix-state-panel {
+    margin-top: 6px;
+    padding: 8px 12px;
+    border-radius: 14px;
+    background: rgba(0, 0, 0, 0.42);
+    backdrop-filter: blur(6px);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.mix-state-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--mix-dim);
+}
+
+.mix-state-row b {
+    color: var(--mix-gold);
+    font-variant-numeric: tabular-nums;
+}
+
+/* 机括：停靠位选择 */
+.mix-dock-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.mix-dock-chip {
+    border: 1px solid var(--mix-line);
+    border-radius: 999px;
+    padding: 7px 14px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    background: transparent;
+    color: var(--mix-dim);
+}
+
+.mix-dock-chip[data-on="true"] {
+    border-color: transparent;
+    background: rgba(141, 123, 245, 0.2);
+    color: var(--mix-violet);
+}
+
+/* ══════════════════════════════════════════
+   机括的常驻界面与停靠位
+   位置一律由应用排布：界面只能选停靠位，不能自己定坐标——
+   否则三件机括一起糊满屏幕，输入框都点不到。
+   ══════════════════════════════════════════ */
+
+.mix-panel-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 6;
+}
+
+.mix-panel {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    pointer-events: auto;
+    border-radius: 14px;
+    overflow: hidden;
+    background: rgba(10, 9, 16, 0.72);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--mix-line);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+/* 收起时只剩一条把手 */
+.mix-panel-tab {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 6px 10px;
+    border: none;
+    background: transparent;
+    color: var(--mix-violet);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.mix-panel-tab-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mix-panel-frame {
+    flex: 1;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    min-height: 0;
+}
+
+/* ── 左右侧栏：竖条，顶到状态条下方，留出输入栏 ── */
+.mix-panel[data-dock="left"],
+.mix-panel[data-dock="right"] {
+    top: 12%;
+    width: 148px;
+    max-width: 42%;
+    max-height: 52%;
+}
+
+.mix-panel[data-dock="left"] { left: 8px; }
+.mix-panel[data-dock="right"] { right: 8px; }
+
+.mix-panel[data-dock="left"]:not([data-open]),
+.mix-panel[data-dock="right"]:not([data-open]) {
+    max-height: none;
+}
+
+/* ── 底部条：压在输入栏上方 ── */
+.mix-panel[data-dock="bottom"] {
+    left: 10px;
+    right: 10px;
+    bottom: 68px;
+    max-height: 34%;
+}
+
+.mix-panel[data-dock="bottom"][data-open="true"] .mix-panel-frame {
+    min-height: 96px;
+}
+
+/* ── 悬浮球：默认收起成一颗，展开是一块中等面板 ── */
+.mix-panel[data-dock="float"] {
+    right: 8px;
+    bottom: 128px;
+    width: 176px;
+    max-height: 44%;
+}
+
+.mix-panel[data-dock="float"]:not([data-open]) {
+    width: auto;
+    max-width: 132px;
+}
+
+.mix-panel[data-dock="float"][data-open="true"] .mix-panel-frame {
+    min-height: 140px;
+}
+
+/* 两件同侧时错开，别叠在一起 */
+.mix-panel[data-dock="left"] ~ .mix-panel[data-dock="left"] { top: 40%; }
+.mix-panel[data-dock="right"] ~ .mix-panel[data-dock="right"] { top: 40%; }
+.mix-panel[data-dock="bottom"] ~ .mix-panel[data-dock="bottom"] { bottom: 152px; }
+.mix-panel[data-dock="float"] ~ .mix-panel[data-dock="float"] { bottom: 196px; }
+
+/* 带可执行逻辑的材料（机括）：列表与详情里都要显眼一点 */
+.mix-mat-badge[data-tone="code"] {
+    background: rgba(217, 176, 106, 0.18);
+    color: var(--mix-gold);
 }

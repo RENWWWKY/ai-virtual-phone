@@ -28,6 +28,7 @@ import ReadingApp from "@/components/reading/reading-app";
 import MapApp from "@/components/map/map-app";
 import { DwellingApp } from "@/components/dwelling/dwelling-app";
 import { MascotFloat } from "@/components/mascot/mascot-float";
+import { MascotPreviewHost } from "@/components/mascot/mascot-preview-host";
 import { useMusicControlsOptional } from "@/lib/music-context";
 import { PhoneResourcesApp, type ResourceSubPage } from "@/components/phone-resources-app";
 import { CheckPhoneApp } from "@/components/checkphone/checkphone-app";
@@ -136,7 +137,7 @@ import { startWeixinCloudRealtimeSync } from "@/lib/weixin-cloud-sync";
 import { sendBrowserNotification } from "@/lib/browser-notification";
 import type { ChatSharePayload } from "@/lib/chat-share";
 import { completePendingMcpOAuthCallback } from "@/lib/tool-executor";
-import { LayoutGrid, LoaderCircle, Martini, RefreshCw } from "lucide-react";
+import { LayoutGrid, LoaderCircle, RefreshCw } from "lucide-react";
 
 const EMOJI_FONTS = '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Twemoji Mozilla"';
 
@@ -1063,8 +1064,6 @@ export function DesktopShell({ initialThemeProfile, initialThemeAssets }: Deskto
   const [glassPaintPass, setGlassPaintPass] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [activeApp, setActiveApp] = useState<DesktopIconId | null>(null);
-  // 独家特调：施工牌（可选择仍要进入应用）
-  const [mixologyNoticeOpen, setMixologyNoticeOpen] = useState(false);
   const [customApps, setCustomApps] = useState<InstalledCustomApp[]>([]);
   // 自定义 APP 桌面图标样式偏好（global = 忽略上传图标走全局效果）
   const [customAppIconStyles, setCustomAppIconStyles] = useState<Record<string, CustomAppIconStyle>>({});
@@ -2205,10 +2204,6 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       return;
     }
     const builtinIconId = iconId as IconId;
-    if (builtinIconId === "mixology") {
-      setMixologyNoticeOpen(true);
-      return;
-    }
     const meta = ICONS[builtinIconId];
     if (meta?.path && meta.id === "worldbuilder") {
       openWorldBuilder(meta.path);
@@ -4031,52 +4026,6 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
                 </aside>
               ) : null}
 
-              {mixologyNoticeOpen ? (
-                <div
-                  className="modal-overlay"
-                  data-ui="modal"
-                  role="presentation"
-                  onClick={() => setMixologyNoticeOpen(false)}
-                >
-                  <div
-                    className="modal-dialog"
-                    data-ui="modal-dialog"
-                    role="dialog"
-                    aria-modal="true"
-                    aria-label="独家特调"
-                    onClick={event => event.stopPropagation()}
-                  >
-                    <div className="modal-header" data-ui="modal-header">
-                      <div className="ui-icon-circle" data-variant="action">
-                        <Martini size={20} />
-                      </div>
-                      <h3 className="modal-title">独家特调</h3>
-                    </div>
-                    <div className="modal-body" data-ui="modal-body">
-                      <p>{"这个APP还在施工中，先去别的地方看看吧～"}</p>
-                    </div>
-                    <div className="modal-footer" data-ui="modal-footer">
-                      <button
-                        type="button"
-                        className="ui-btn"
-                        onClick={() => setMixologyNoticeOpen(false)}
-                      >
-                        返回桌面
-                      </button>
-                      <button
-                        type="button"
-                        className="ui-btn ui-btn-primary"
-                        onClick={() => {
-                          setMixologyNoticeOpen(false);
-                          setActiveApp("mixology");
-                        }}
-                      >
-                        仍要看看
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
 
               {customAppUpdatePrompt ? (
                 <div
@@ -4698,6 +4647,8 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
               <DebugPromptPanel />
               <QuickActionFloat />
               <MascotFloat />
+              {/* 预览弹窗宿主：独立于桌宠的展开/收起状态，否则桌宠收成小球时弹不出来 */}
+              <MascotPreviewHost />
 
               {/* Widget Picker Bottom Sheet */}
               {showWidgetPicker && (
