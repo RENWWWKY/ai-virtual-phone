@@ -142,7 +142,7 @@ export function startMixSession(
     if (!card || card.kind !== "character") {
         throw new ChatEngineError("特调里没有角色卡，装不满这一杯。");
     }
-    // 代入名：显式传入 > 面具材料的代入名（装配器同规则，这里快照进对局供界面用）
+    // 用户的名字：显式传入 > 面具材料里填的（装配器同规则，这里快照进对局供界面用）
     const personaId = mixSlotFirstId(recipe.slots, "persona");
     const personaMat = personaId ? getMixMaterial(personaId) : null;
     const personaUserName = personaMat?.kind === "persona" ? personaMat.userName?.trim() : undefined;
@@ -406,6 +406,7 @@ export async function generateMixReply(
     sessionId: string,
     userText: string,
     signal?: AbortSignal,
+    onUserTurn?: () => void,
 ): Promise<MixReplyResult> {
     const current = getMixSession(sessionId);
     if (!current) throw new ChatEngineError("对局不存在。");
@@ -423,6 +424,9 @@ export async function generateMixReply(
     };
     const withUser: MixSession = { ...before.session, turns: [...before.session.turns, userTurn] };
     saveMixSession(withUser);
+    // 落杯前钩子是 await 的，这句落库比调用方那次「同步回读」晚一拍，
+    // 所以得主动喊一声：用户气泡要在模型回来之前就上屏
+    onUserTurn?.();
     // 这条路径的落杯前已经跑过了，别在 runMixGeneration 里重复触发
     return runMixGeneration(withUser, before.note, signal, true);
 }
@@ -466,6 +470,37 @@ export async function continueMix(sessionId: string, signal?: AbortSignal): Prom
     const current = getMixSession(sessionId);
     if (!current) throw new ChatEngineError("对局不存在。");
     return runMixGeneration(current, "（请接着上文继续推进剧情，直接续写，不要重复已写过的内容。）", signal);
+}
+
+/**
+ * 还没开口的对局：进来时用当前角色卡重取开场白。
+ *
+ * 开场白是建局那一刻写进 turns[0] 的一条消息，不是对材料的引用——所以作者改完卡
+ * 回到对局，看到的还是旧的那句。这里只在「这一局玩家一个字都还没说」时重取：
+ * 已经聊过的对局绝不动，那是真实历史，改了界面就和发给模型的上下文对不上。
+ *
+ * 返回是否真的换了，调用方据此决定要不要提示一句。
+ */
+export function refreshMixOpening(sessionId: string): { session: MixSession; changed: boolean } | null {
+    const current = getMixSession(sessionId);
+    if (!current) return null;
+    const onlyOpening = current.turns.length === 1 && current.turns[0].role === "assistant";
+    if (!onlyOpening) return { session: current, changed: false };
+    let fresh: string;
+    try {
+        fresh = assembleFromSession(current).prompt.opening;
+    } catch {
+        // 卡被删了之类：留着原来那句，别把开场白弄没
+        return { session: current, changed: false };
+    }
+    if (!fresh.trim() || fresh === current.turns[0].text) return { session: current, changed: false };
+    const updated: MixSession = {
+        ...current,
+        turns: [{ ...current.turns[0], text: fresh }],
+        updatedAt: Date.now(),
+    };
+    saveMixSession(updated);
+    return { session: updated, changed: true };
 }
 
 /** 回溯到某条消息：保留它，删除其后的全部内容 */

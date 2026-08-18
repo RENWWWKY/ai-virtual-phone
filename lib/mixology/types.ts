@@ -14,7 +14,7 @@ export type MixMaterialKind =
     | "glass"     // 杯型：输出格式
     | "strength"  // 苦精：尾部强化（离生成最近、权重最高）
     | "ticket"    // 小票：状态数据卡（输出契约 + 渲染代码）
-    | "garnish"   // 装饰：界面美化 CSS
+    | "garnish"   // 外观：界面美化 CSS
     | "encore"    // 尾调：随卡互动 HTML 小品
     | "filter"    // 滤网：正则清洗正文（不进提示词）
     | "mechanism"; // 机括：沙盒里跑的钩子逻辑 + 常驻界面
@@ -27,7 +27,7 @@ export const MIX_KIND_LABELS: Record<MixMaterialKind, string> = {
     glass: "杯型",
     strength: "苦精",
     ticket: "小票",
-    garnish: "装饰",
+    garnish: "外观",
     encore: "尾调",
     filter: "滤网",
     mechanism: "机括",
@@ -38,7 +38,7 @@ export const MIX_SLOT_ORDER: MixMaterialKind[] = [
     "character", "persona", "base", "flavor", "glass", "strength", "ticket", "garnish", "encore", "filter", "mechanism",
 ];
 
-/** 每类材料在提示词里的正规段名（装饰不进提示词，标它的实际职责） */
+/** TAB 上大字下面那行小字：说明这一类到底干什么（不进提示词的种类标它的实际职责） */
 export const MIX_KIND_SECTION_LABELS: Record<MixMaterialKind, string> = {
     character: "角色资料",
     persona: "用户资料",
@@ -49,8 +49,8 @@ export const MIX_KIND_SECTION_LABELS: Record<MixMaterialKind, string> = {
     ticket: "状态栏",
     garnish: "界面样式",
     encore: "小剧场",
-    filter: "文本清洗",
-    mechanism: "机括",
+    filter: "正则替换",
+    mechanism: "可执行逻辑",
 };
 
 /** 必选槽：没配齐不能开局；其余槽可留空 */
@@ -105,6 +105,38 @@ export const MIX_VISUAL_KINDS: MixMaterialKind[] = ["character", "ticket", "garn
 
 export function mixKindHasCover(kind: MixMaterialKind): boolean {
     return MIX_VISUAL_KINDS.includes(kind);
+}
+
+/** 一件材料最多几个标签 / 每个标签最长几个字：与云端 normalizeTags 同口径 */
+export const MIX_TAG_MAX = 8;
+export const MIX_TAG_LEN = 24;
+
+/**
+ * 标签规整：去空白、去重、掐长度、掐个数。
+ * 本地和云端必须同一套口径——否则本地看着有九个标签，发布上去只剩八个，
+ * 作者会以为发布把标签吞了。
+ */
+export function normalizeMixTags(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    const out: string[] = [];
+    for (const item of value) {
+        if (typeof item !== "string") continue;
+        const tag = item.trim().replace(/\s+/g, " ").slice(0, MIX_TAG_LEN);
+        if (!tag || out.includes(tag)) continue;
+        out.push(tag);
+        if (out.length >= MIX_TAG_MAX) break;
+    }
+    return out;
+}
+
+/** 编辑器里一行文本拆成标签：逗号、顿号、竖线、井号、空格都算分隔 */
+export function parseMixTags(text: string): string[] {
+    return normalizeMixTags(text.split(/[,，、|｜#＃\s]+/));
+}
+
+/** 标签回填到编辑器那一行文本 */
+export function formatMixTags(tags: string[] | undefined): string {
+    return (tags ?? []).join("、");
 }
 
 /** 所有材料共有的元信息 */
@@ -170,10 +202,10 @@ export type MixTextMaterial = MixMaterialMeta & {
     content: string;
 };
 
-/** 面具（用户人设）：{{user}} 是谁——代入名 + 人设正文，装配成「用户资料」段 */
+/** 面具（用户人设）：{{user}} 是谁——名字 + 人设正文，装配成「用户资料」段 */
 export type MixPersonaMaterial = MixMaterialMeta & {
     kind: "persona";
-    /** 玩家代入名，替换 {{user}}；留空用默认「你」 */
+    /** 用户的名字，替换 {{user}}；留空用默认「你」 */
     userName?: string;
     content: string;
 };
@@ -202,7 +234,7 @@ export type MixTicketMaterial = MixMaterialMeta & {
     vars?: MixTicketVar[];
 };
 
-/** 装饰：对局界面美化（官方语义类 + 界面定位符的 CSS） */
+/** 外观：对局界面美化（官方语义类 + 界面定位符的 CSS） */
 export type MixGarnishMaterial = MixMaterialMeta & {
     kind: "garnish";
     css: string;
@@ -245,7 +277,11 @@ export type MixFilterMaterial = MixMaterialMeta & {
     rules: MixFilterRule[];
 };
 
-/** 机括的停靠位：界面挂在对局画面的哪一侧，位置由应用排布，创作者只能选 */
+/**
+ * 机括的停靠位。这是第一版的摆放方式——四个写死的位置，创作者只能挑一个。
+ * 现在留着只为了两件事：认得出老材料，以及给自由摆放提供几个顺手的起手式。
+ * 新材料一律用下面的 MixPanelLayout。
+ */
 export type MixDock = "left" | "right" | "bottom" | "float";
 
 export const MIX_DOCK_LABELS: Record<MixDock, string> = {
@@ -256,18 +292,139 @@ export const MIX_DOCK_LABELS: Record<MixDock, string> = {
 };
 
 /**
+ * 常驻界面的摆放。位置与尺寸都是「占对局画面的百分比」，不是像素——
+ * 同一件机括在 iPhone SE 和 iPad 上要落在同一个相对位置，写死像素做不到这件事。
+ *
+ * 边界只剩两条，都是为了「别把对局锁死」，不是为了限制排版：
+ * ① 面板至少有 MIX_PANEL_KEEP_IN 那么大一块留在画面里，拖不丢；
+ * ② 层级压在应用自己的弹窗之下。
+ * 除此之外画在哪、画多大、能不能拖、要不要应用画的外壳，全是创作者说了算。
+ */
+export type MixPanelLayout = {
+    /** 左上角，占对局画面宽/高的百分比 */
+    x: number;
+    y: number;
+    /** 宽高，同样是百分比 */
+    w: number;
+    h: number;
+    /** 高度跟着内容走，h 退化成上限：写「小胶囊」这类随内容伸缩的面板用 */
+    autoHeight?: boolean;
+    /** 玩家能不能拖着走（拖过的位置记在这一局里，不改材料本身） */
+    drag?: boolean;
+    /** 玩家能不能拉大小 */
+    resize?: boolean;
+    /** 应用要不要画那条带名字和收起箭头的把手；none = 外壳全交给创作者 */
+    chrome?: "bar" | "none";
+    /** 应用要不要画底板（圆角暗底、描边、投影）。自己画背景的关掉它 */
+    plate?: boolean;
+    /**
+     * 按多宽来画（像素）。填了之后界面里的一切按这个宽度排版，应用再整体缩放到面板实际大小——
+     * 画一台 390 宽的手机、一张卡片时必须用它，否则同一份 CSS 在小面板里会挤成一团、
+     * 在大面板里又稀稀拉拉，预览与实际也对不上。不填则界面直接按面板的实际像素排版。
+     */
+    designWidth?: number;
+    /** 同屏几件互相压时的次序，0–9 */
+    z?: number;
+    /** 开局时收起（只有 chrome 为 bar 时才有收起这回事） */
+    collapsed?: boolean;
+};
+
+/** 拖丢了捡不回来，所以无论怎么拖都至少留这么多在画面里（百分比） */
+export const MIX_PANEL_KEEP_IN = 8;
+/** 面板最小尺寸：再小就点不中了 */
+export const MIX_PANEL_MIN_W = 8;
+export const MIX_PANEL_MIN_H = 4;
+/** 层级上限：再高会压到应用自己的弹窗上面去 */
+export const MIX_PANEL_MAX_Z = 9;
+
+/** 四个老停靠位对应的摆放，同时也是编辑器里的起手式 */
+export const MIX_DOCK_PRESETS: Record<MixDock, MixPanelLayout> = {
+    left: { x: 2, y: 12, w: 38, h: 52, drag: true, chrome: "bar", plate: true },
+    right: { x: 60, y: 12, w: 38, h: 52, drag: true, chrome: "bar", plate: true },
+    bottom: { x: 3, y: 58, w: 94, h: 34, drag: true, chrome: "bar", plate: true },
+    float: { x: 55, y: 66, w: 45, h: 26, drag: true, chrome: "bar", plate: true, collapsed: true },
+};
+
+function clampNum(value: unknown, min: number, max: number, fallback: number): number {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return fallback;
+    return Math.min(max, Math.max(min, Math.round(num * 100) / 100));
+}
+
+/**
+ * 规整一份摆放。导入的 JSON、云端拿回来的记录、界面自己 postMessage 上来的请求
+ * 都从这里过一遍——越界的夹回来，认不出的字段丢掉。
+ */
+export function normalizeMixPanelLayout(value: unknown): MixPanelLayout | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    const w = clampNum(record.w, MIX_PANEL_MIN_W, 100, 40);
+    const h = clampNum(record.h, MIX_PANEL_MIN_H, 100, 30);
+    // 允许负数与超过 100：面板可以有一部分在画面外，只要留得下 KEEP_IN 那一块
+    const x = clampNum(record.x, MIX_PANEL_KEEP_IN - w, 100 - MIX_PANEL_KEEP_IN, 4);
+    const y = clampNum(record.y, MIX_PANEL_KEEP_IN - h, 100 - MIX_PANEL_KEEP_IN, 12);
+    const layout: MixPanelLayout = { x, y, w, h };
+    if (record.autoHeight === true) layout.autoHeight = true;
+    if (record.drag !== false) layout.drag = true;
+    if (record.resize === true) layout.resize = true;
+    layout.chrome = record.chrome === "none" ? "none" : "bar";
+    layout.plate = record.plate !== false;
+    const design = clampNum(record.designWidth, 120, 1600, 0);
+    if (design) layout.designWidth = Math.round(design);
+    const z = clampNum(record.z, 0, MIX_PANEL_MAX_Z, 0);
+    if (z) layout.z = z;
+    if (record.collapsed === true) layout.collapsed = true;
+    return layout;
+}
+
+/** 一件机括最终按哪份摆放画：自己写了就用自己的，只有老停靠位就换算过来 */
+export function mixPanelLayoutOf(material: { layout?: MixPanelLayout; dock?: MixDock }): MixPanelLayout | undefined {
+    const own = normalizeMixPanelLayout(material.layout);
+    if (own) return own;
+    return material.dock ? { ...MIX_DOCK_PRESETS[material.dock] } : undefined;
+}
+
+/** 详情页上用一行字说清这份摆放 */
+export function mixPanelLayoutSummary(layout: MixPanelLayout): string {
+    const parts = [
+        `左 ${layout.x}% · 上 ${layout.y}%`,
+        `${layout.w}% × ${layout.autoHeight ? "随内容" : `${layout.h}%`}`,
+    ];
+    if (layout.designWidth) parts.push(`按 ${layout.designWidth}px 宽排版`);
+    const flags: string[] = [];
+    if (layout.drag !== false) flags.push("可拖动");
+    if (layout.resize) flags.push("可缩放");
+    if ((layout.chrome ?? "bar") === "none") flags.push("无外壳");
+    if (layout.plate === false) flags.push("无底板");
+    if (flags.length) parts.push(flags.join("、"));
+    return parts.join(" · ");
+}
+
+/**
+ * 自由摆放换算回最接近的老停靠位。发布时一起写上去，
+ * 老版本客户端拿到这件机括时还能把它挂在个大致对的地方，而不是直接不显示。
+ */
+export function mixNearestDock(layout: MixPanelLayout): MixDock {
+    if (layout.w >= 70) return "bottom";
+    if (layout.h <= 34 && layout.y >= 50) return "float";
+    return layout.x + layout.w / 2 < 50 ? "left" : "right";
+}
+
+/**
  * 机括：两个部分，任一半可留空。
  * - 钩子：在流水线的固定几个口子上被叫起来跑一下，收数据包、还数据包，
  *   跑在没有网络、碰不到宿主页面的沙盒里，还带超时熔断。
- * - 常驻界面：选一个停靠位挂一段 HTML，跨轮活着、有自己的存储。
+ * - 常驻界面：按自己写的坐标与尺寸挂一段 HTML，跨轮活着、有自己的存储。
  * 两半共用同一个存储桶，天然能互相看见。
  */
 export type MixMechanismMaterial = MixMaterialMeta & {
     kind: "mechanism";
     /** 钩子代码：定义 onSessionStart / onBeforeSend / onAfterReply / onSessionEnd */
     script?: string;
-    /** 常驻界面的停靠位；不填则这件机括没有界面 */
+    /** @deprecated 第一版的四个停靠位，只为认得出老材料而保留；新材料写 layout */
     dock?: MixDock;
+    /** 常驻界面画在哪、多大、能不能拖；不填也没有 dock 则这件机括没有界面 */
+    layout?: MixPanelLayout;
     /** 常驻界面的 HTML（含 CSS/JS），在沙盒 iframe 里跑 */
     panelHtml?: string;
 };
@@ -380,7 +537,7 @@ export type MixSession = {
     recipe: MixRecipe;
     /** 角色名快照（列表展示用，酒柜里的卡被删也不受影响） */
     charName: string;
-    /** 玩家代入名（{{user}}），空则用默认 */
+    /** 用户的名字（{{user}}），空则用默认 */
     userName?: string;
     /** 选用的开场索引 */
     openingIndex: number;
@@ -394,6 +551,11 @@ export type MixSession = {
      * 需要的话机括可以自己发现轮数倒退并复位。
      */
     mechanismStore?: Record<string, Record<string, string>>;
+    /**
+     * 玩家自己拖动/缩放过的面板位置（materialId → 摆放），只在这一局有效。
+     * 不写回材料：材料是作者的作品，玩家挪一下自己的屏幕不该改到别人的作品。
+     */
+    panelBox?: Record<string, MixPanelLayout>;
     createdAt: number;
     updatedAt: number;
 };
