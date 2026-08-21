@@ -337,7 +337,7 @@ export const MIX_PANEL_MIN_H = 4;
 /** 层级上限：再高会压到应用自己的弹窗上面去 */
 export const MIX_PANEL_MAX_Z = 9;
 
-/** 四个老停靠位对应的摆放，同时也是编辑器里的起手式 */
+/** 四个老停靠位对应的摆放：只用来把老材料换算过来，编辑器里不再提供选择 */
 export const MIX_DOCK_PRESETS: Record<MixDock, MixPanelLayout> = {
     left: { x: 2, y: 12, w: 38, h: 52, drag: true, chrome: "bar", plate: true },
     right: { x: 60, y: 12, w: 38, h: 52, drag: true, chrome: "bar", plate: true },
@@ -377,11 +377,25 @@ export function normalizeMixPanelLayout(value: unknown): MixPanelLayout | undefi
     return layout;
 }
 
-/** 一件机括最终按哪份摆放画：自己写了就用自己的，只有老停靠位就换算过来 */
-export function mixPanelLayoutOf(material: { layout?: MixPanelLayout; dock?: MixDock }): MixPanelLayout | undefined {
+/**
+ * 写了界面代码但没写摆放时用的起始值。
+ * 摆放是界面自己在代码里用 mix.move / mix.size / mix.chrome … 定的，
+ * 这里只是「代码还没跑起来的那一帧」站的地方：应用一笔都不画，位置给个中性的框。
+ */
+export const MIX_PANEL_DEFAULT_LAYOUT: MixPanelLayout = {
+    x: 6, y: 14, w: 88, h: 44, drag: true, chrome: "none", plate: false,
+};
+
+/**
+ * 一件机括最终按哪份摆放画。
+ * 自己写了就用自己的；只有老停靠位就换算过来；两样都没有但写了界面代码，
+ * 就落在中性的起始值上，等界面代码自己挪走——有界面代码就有界面，不再另外声明一次。
+ */
+export function mixPanelLayoutOf(material: { layout?: MixPanelLayout; dock?: MixDock; panelHtml?: string }): MixPanelLayout | undefined {
     const own = normalizeMixPanelLayout(material.layout);
     if (own) return own;
-    return material.dock ? { ...MIX_DOCK_PRESETS[material.dock] } : undefined;
+    if (material.dock) return { ...MIX_DOCK_PRESETS[material.dock] };
+    return material.panelHtml?.trim() ? { ...MIX_PANEL_DEFAULT_LAYOUT } : undefined;
 }
 
 /** 详情页上用一行字说清这份摆放 */
@@ -401,7 +415,7 @@ export function mixPanelLayoutSummary(layout: MixPanelLayout): string {
 }
 
 /**
- * 自由摆放换算回最接近的老停靠位。发布时一起写上去，
+ * 自由摆放换算回最接近的老停靠位。老材料改存时一起写上去，
  * 老版本客户端拿到这件机括时还能把它挂在个大致对的地方，而不是直接不显示。
  */
 export function mixNearestDock(layout: MixPanelLayout): MixDock {
@@ -423,7 +437,10 @@ export type MixMechanismMaterial = MixMaterialMeta & {
     script?: string;
     /** @deprecated 第一版的四个停靠位，只为认得出老材料而保留；新材料写 layout */
     dock?: MixDock;
-    /** 常驻界面画在哪、多大、能不能拖；不填也没有 dock 则这件机括没有界面 */
+    /**
+     * 常驻界面的起始摆放。新材料一般没有这个字段——画在哪、多大、要不要应用画外壳，
+     * 都在界面代码里用 mix.move / mix.size / mix.chrome … 写。有没有界面看 panelHtml。
+     */
     layout?: MixPanelLayout;
     /** 常驻界面的 HTML（含 CSS/JS），在沙盒 iframe 里跑 */
     panelHtml?: string;
@@ -523,6 +540,13 @@ export type MixTurn = {
     /** 该轮小剧场壳内原文（尾调写了契约且 AI 输出时才有） */
     encoreRaw?: string;
     /**
+     * 供稿材料戳（可选）：平时不写——历史轮跟着当前件的渲染代码走（整体换皮）。
+     * 只在局中换小票/尾调那一刻，由旧件给已有的轮盖上自己的 id；
+     * 渲染时有戳的轮用戳指向的皮（见 MixSession.retiredRender），新轮用新件。
+     */
+    ticketId?: string;
+    encoreId?: string;
+    /**
      * 这一轮结束时记住的值。回溯 / 重说 / 编辑某轮之后，
      * 直接取剩下最后一轮的这份快照还原，数字不会停留在被丢掉的未来。
      */
@@ -556,6 +580,12 @@ export type MixSession = {
      * 不写回材料：材料是作者的作品，玩家挪一下自己的屏幕不该改到别人的作品。
      */
     panelBox?: Record<string, MixPanelLayout>;
+    /**
+     * 退役的渲染皮（materialId → 渲染 HTML）：局中换小票/尾调那一刻，旧件的
+     * 渲染代码快照进来，被盖了戳的历史轮（MixTurn.ticketId/encoreId）按这份
+     * 皮回放——旧件之后从酒柜删掉也不受影响。每件只存一份，不逐轮存。
+     */
+    retiredRender?: Record<string, string>;
     createdAt: number;
     updatedAt: number;
 };
